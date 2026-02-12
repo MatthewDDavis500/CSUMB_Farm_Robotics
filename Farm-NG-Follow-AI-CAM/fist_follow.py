@@ -9,8 +9,8 @@ import mediapipe as mp
 from cvzone.PoseModule import PoseDetector
 
 # TCP Connection Setup
-ROBOT_IP = "100.87.161.11"
-PORT = 9999
+ROBOT_IP = "100.75.188.55"
+PORT = 6001
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 client_socket.connect((ROBOT_IP, PORT))
 print("[Follower] Connected to robot.")
