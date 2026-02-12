@@ -1,0 +1,26 @@
+{
+    "name": "record_default",
+    "subscriptions": [
+        {
+            "uri": {
+            "path": "*",
+            "query": "service_name=gps"
+            },
+            "every_n": 1
+        },
+        {
+            "uri": {
+            "path": "*",
+            "query": "service_name=oak/0"
+            },
+            "every_n": 1
+        },
+        {
+            "uri": {
+            "path": "*",
+            "query": "service_name=oak/1"
+            },
+            "every_n": 1
+        }
+    ]
+}

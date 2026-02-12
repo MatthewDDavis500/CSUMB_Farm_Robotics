@@ -1,0 +1,26 @@
+# --- Python Junk ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# --- WSL / Linux Junk ---
+.fuse_hidden*
+.directory
+.Trash-*
+
+# --- Windows Junk ---
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# --- VS Code Junk ---
+.vscode/
+.history/
+
+# --- Amiga Junk ---
+# *.adf
+# *.bak
+# *.tmp
