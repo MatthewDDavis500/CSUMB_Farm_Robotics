@@ -2,9 +2,9 @@
 #When a fist is detected it will send a stop command
 #When it doesnt detect a fist it will continue following again
 
+import asyncio
 import cv2
 import socket
-import depthai as dai
 import mediapipe as mp
 from cvzone.PoseModule import PoseDetector
 
@@ -15,7 +15,7 @@ import numpy as np
 
 # TCP Connection Setup
 ROBOT_IP = "100.75.188.55"
-PORT = 6001
+PORT = 50011
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 client_socket.connect((ROBOT_IP, PORT))
 print("[Follower] Connected to robot.")
@@ -35,16 +35,6 @@ def is_fist(landmarks):
     tips = [8, 12, 16, 20]
     pips = [6, 10, 14, 18]
     return all(landmarks[tip].y > landmarks[pip].y for tip, pip in zip(tips, pips))
-
-# Create pipeline and camera
-pipeline = dai.Pipeline()
-cam = pipeline.createColorCamera()
-cam.setPreviewSize(1280, 720)
-cam.setInterleaved(False)
-cam.setBoardSocket(dai.CameraBoardSocket.CAM_A)
-xout = pipeline.createXLinkOut()
-xout.setStreamName("video")
-cam.preview.link(xout.input)
 
 # Frame and movement setup
 frame_width = 1280
@@ -127,6 +117,9 @@ async def main_loop():
         client_socket.close()
         cv2.destroyAllWindows()
         print("[Follower] Shutdown complete.")
+
+if __name__ == "__main__":
+    asyncio.run(main_loop())
     
 
 # with dai.Device(pipeline) as device:
