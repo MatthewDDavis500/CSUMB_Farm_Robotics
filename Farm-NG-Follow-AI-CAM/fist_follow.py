@@ -10,7 +10,7 @@ from cvzone.PoseModule import PoseDetector
 
 from farm_ng.core.event_client import EventClient
 from farm_ng.core.event_service_pb2 import EventServiceConfig
-from farm_ng.oak.oak_client import OakClient
+from farm_ng.canbus.canbus_pb2 import Twist2d
 import numpy as np
 
 # TCP Connection Setup
@@ -41,17 +41,19 @@ frame_width = 1280
 frame_center = frame_width // 2
 center_tolerance = frame_width // 10
 
-# 1. Setup the Camera Client
+# 1. Setup the Camera Client and CANBUS client
 cam_config = EventServiceConfig(name="oak0", host=ROBOT_IP, port=50011)
-oak_client = OakClient(cam_config)
+camera_client = EventClient(cam_config)
+
+motor_client = EventClient(EventServiceConfig(name="canbus", host=ROBOT_IP, port=50051))
 
 async def main_loop():
     try:
         # 2. Start the camera stream
-        async for event, log in oak_client.get_frames():
+        async for event, payload in camera_client.subscribe(cam_config):
             # Convert the Amiga stream to an OpenCV frame
             # (The Amiga sends raw bytes that need decoding)
-            frame = cv2.imdecode(np.frombuffer(log.image.data, dtype=np.uint8), cv2.IMREAD_COLOR)
+            frame = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
             
             if frame is None:
                 continue
