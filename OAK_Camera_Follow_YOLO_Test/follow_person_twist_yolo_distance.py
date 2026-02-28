@@ -16,8 +16,6 @@ def clamp(x: float, lo: float, hi: float) -> float:
     return float(max(lo, min(hi, x)))
 
 async def follow(
-    canbus_cfg_path: Path,
-    camera_cfg_path: Path,
     *,
     model_name: str,
     conf: float,
@@ -36,8 +34,8 @@ async def follow(
     send_hz: float,
     flip_steer: bool,
 ):
-    canbus_cfg: EventServiceConfig = proto_from_json_file(canbus_cfg_path, EventServiceConfig())
-    cam_cfg: EventServiceConfig = proto_from_json_file(camera_cfg_path, EventServiceConfig())
+    canbus_cfg: EventServiceConfig = proto_from_json_file('canbus_config.json', EventServiceConfig())
+    cam_cfg: EventServiceConfig = proto_from_json_file('oak_config.json', EventServiceConfig())
 
     canbus_client = EventClient(canbus_cfg)
     cam_client = EventClient(cam_cfg)
@@ -215,9 +213,7 @@ async def follow(
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--canbus-config", type=Path, required=True)
-    ap.add_argument("--camera-config", type=Path, required=True)
-
+    
     ap.add_argument("--model", type=str, default="yolov8n.pt")
     ap.add_argument("--conf", type=float, default=0.60, help="Raise to reduce false positives")
     ap.add_argument("--iou", type=float, default=0.5)
@@ -244,8 +240,6 @@ if __name__ == "__main__":
 
     asyncio.run(
         follow(
-            args.canbus_config,
-            args.camera_config,
             model_name=args.model,
             conf=args.conf,
             iou=args.iou,
