@@ -15,9 +15,9 @@ import numpy as np
 
 # TCP Connection Setup
 ROBOT_IP = "100.75.188.55"
-PORT = 50011
-client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-client_socket.connect((ROBOT_IP, PORT))
+# PORT = 50011
+# client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+# client_socket.connect((ROBOT_IP, PORT))
 print("[Follower] Connected to robot.")
 
 # Initialize pose detector
@@ -46,6 +46,25 @@ cam_config = EventServiceConfig(name="oak0", host=ROBOT_IP, port=50011)
 camera_client = EventClient(cam_config)
 
 motor_client = EventClient(EventServiceConfig(name="canbus", host=ROBOT_IP, port=50051))
+
+async def test_camera():
+    ROBOT_IP = "100.75.188.55"
+    PORT = 50010 # Standard OAK port
+    
+    config = EventServiceConfig(name="test_cam", host=ROBOT_IP, port=PORT)
+    client = EventClient(config)
+    
+    print(f"Checking camera at {ROBOT_IP}:{PORT}...")
+    
+    try:
+        # We use a timeout so it doesn't hang forever
+        async for event, payload in asyncio.wait_for(client.subscribe(config), timeout=5.0):
+            print(f"SUCCESS! Received frame: {len(payload)} bytes")
+            break # We only need one frame to confirm
+    except asyncio.TimeoutError:
+        print("FAILURE: Connection timed out. The Amiga is there, but no video is flowing.")
+    except Exception as e:
+        print(f"ERROR: {e}")
 
 async def main_loop():
     try:
@@ -100,7 +119,7 @@ async def main_loop():
                 command = 'x'  # no person detected, stop
 
             try:
-                client_socket.sendall(command.encode())
+                # client_socket.sendall(command.encode())
                 print(f"[Follower] Sent command: {command}")
             except Exception as e:
                 print(f"[Follower][TCP ERROR]: {e}")
@@ -110,13 +129,13 @@ async def main_loop():
             cv2.imshow("Follower View", img)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                client_socket.sendall('x'.encode())
+                # client_socket.sendall('x'.encode())
                 break
     except Exception as e:
         print(f"Error: {e}")
     
     finally:
-        client_socket.close()
+        # client_socket.close()
         cv2.destroyAllWindows()
         print("[Follower] Shutdown complete.")
 
