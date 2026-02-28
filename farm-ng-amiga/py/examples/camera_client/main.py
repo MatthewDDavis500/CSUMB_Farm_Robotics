@@ -27,43 +27,88 @@ from farm_ng.core.stamp import get_stamp_by_semantics_and_clock_type
 from farm_ng.core.stamp import StampSemantics
 
 
-async def main(service_config_path: Path) -> None:
-    """Run the camera service client.
+# async def main(service_config_path: Path) -> None:
+#     """Run the camera service client.
     
-    Args:
-        service_config_path (Path): The path to the camera service config.
-    """
+#     Args:
+#         service_config_path (Path): The path to the camera service config.
+#     """
     
-    # Create a client to the camera service
-    config: EventServiceConfig = proto_from_json_file(service_config_path, EventServiceConfig())
-    # Try this to see the actual structure
-    print(f"Subscription object: {config.subscriptions[0]}")
+#     # Create a client to the camera service
+#     config: EventServiceConfig = proto_from_json_file(service_config_path, EventServiceConfig())
+#     # Try this to see the actual structure
+#     print(f"Subscription object: {config.subscriptions[0]} and {config.subscriptions[1]}")
 
-    # To safely find the topic name, try:
-    topic = getattr(config.subscriptions[0], 'uri', 'unknown')
-    print(f"Subscribing to topic: {topic}")
-    async for event, message in EventClient(config).subscribe(config.subscriptions[0], decode=True):
-        # Find the monotonic driver receive timestamp, or the first timestamp if not available.
+#     # To safely find the topic name, try:
+#     topic_front = getattr(config.subscriptions[0], 'uri', 'unknown')
+#     topic_back = getattr(config.subscriptions[1], 'uri', 'unknown')
+#     print(f"Subscribing to topic: {topic_front} and {topic_back}")
+    # async for event, message in EventClient(config).subscribe(config.subscriptions[0], decode=True):
+    #     # Find the monotonic driver receive timestamp, or the first timestamp if not available.
+    #     stamp = (
+    #         get_stamp_by_semantics_and_clock_type(event, StampSemantics.DRIVER_RECEIVE, "monotonic")
+    #         or event.timestamps[0].stamp
+    #     )
+
+    #     # Print the timestamp and metadata
+    #     print('FRONT_CAMERA:')
+    #     print(f"Timestamp: {stamp}\n")
+    #     print(f"Meta: {message.meta}")
+    #     print("###################\n")
+
+    #     # Cast image data bytes to numpy and decode
+    #     image = cv2.imdecode(np.frombuffer(message.image_data, dtype="uint8"), cv2.IMREAD_UNCHANGED)
+    #     if event.uri.path == "/disparity":
+    #         image = cv2.applyColorMap(image * 3, cv2.COLORMAP_JET)
+            
+        
+
+    #     # Visualize the image
+    #     cv2.namedWindow("front image", cv2.WINDOW_NORMAL)
+    #     cv2.imshow("front image", image)
+    #     cv2.waitKey(1)
+        
+async def stream_camera(client: EventClient, subscription, window_name: str) -> None:
+    """Helper function to stream a specific camera subscription."""
+    async for event, message in client.subscribe(subscription, decode=True):
+        # Extract timestamp
         stamp = (
             get_stamp_by_semantics_and_clock_type(event, StampSemantics.DRIVER_RECEIVE, "monotonic")
             or event.timestamps[0].stamp
         )
 
-        # Print the timestamp and metadata
-        print(f"Timestamp: {stamp}\n")
-        print(f"Meta: {message.meta}")
-        print("###################\n")
-
-        # Cast image data bytes to numpy and decode
+        # Decode image
         image = cv2.imdecode(np.frombuffer(message.image_data, dtype="uint8"), cv2.IMREAD_UNCHANGED)
+        
         if event.uri.path == "/disparity":
             image = cv2.applyColorMap(image * 3, cv2.COLORMAP_JET)
 
-        # Visualize the image
-        cv2.namedWindow("image", cv2.WINDOW_NORMAL)
-        cv2.imshow("image", image)
-        cv2.waitKey(1)
+        # Show image
+        cv2.imshow(window_name, image)
+        
+        # cv2.waitKey(1) returns the key pressed. 
+        # We use a small timeout to allow the UI to refresh.
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
+async def main(service_config_path: Path) -> None:
+    config: EventServiceConfig = proto_from_json_file(service_config_path, EventServiceConfig())
+    client = EventClient(config)
+
+    # Prepare the windows
+    cv2.namedWindow("Front Camera", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Back Camera", cv2.WINDOW_NORMAL)
+
+    # Use asyncio.gather to run both streams simultaneously
+    try:
+        await asyncio.gather(
+            stream_camera(client, config.subscriptions[0], "Front Camera"),
+            stream_camera(client, config.subscriptions[1], "Back Camera")
+        )
+    except Exception as e:
+        print(f"Error during streaming: {e}")
+    finally:
+        cv2.destroyAllWindows()
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="python main.py", description="Amiga camera-stream.")
