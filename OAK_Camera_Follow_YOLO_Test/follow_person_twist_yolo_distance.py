@@ -15,8 +15,6 @@ from farm_ng.canbus.canbus_pb2 import Twist2d
 def clamp(x: float, lo: float, hi: float) -> float:
     return float(max(lo, min(hi, x)))
 
-# This is Alex's branch
-
 async def follow(
     canbus_cfg_path: Path,
     camera_cfg_path: Path,
@@ -130,7 +128,7 @@ async def follow(
             latest["score"] = best_score
             latest["ts"] = time.time()
 
-    async def control_loop():
+    async def control_loop():  #;lkhgfdsdfgjkl
         period = 1.0 / send_hz
         last_sent = 0.0
 
