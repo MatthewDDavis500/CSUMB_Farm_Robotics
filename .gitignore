@@ -24,3 +24,6 @@ $RECYCLE.BIN/
 # *.adf
 # *.bak
 # *.tmp
+
+# --- Oak Camera Junk ---
+OAK_Camera_Follow_YOLO_Test/yolov8n.pt
