@@ -74,9 +74,17 @@ async def follow(
     async def analyze_camera(client: EventClient, subscription, window_name: str, model_results: dict, lock) -> None:
         print(window_name)
         """Helper function to find people in a specific camera subscription."""
-        async for event, message in client.subscribe(subscription, decode=True):
+        async for event, message in client.subscribe([subscription.uri.path], decode=False):
+            print(f"DEBUG: {window_name} GOT A MESSAGE!")
             # Decode image
-            frame = cv2.imdecode(np.frombuffer(message.image_data, dtype="uint8"), cv2.IMREAD_UNCHANGED)
+            try:
+                frame = cv2.imdecode(np.frombuffer(message.payload, dtype="uint8"), cv2.IMREAD_UNCHANGED)
+                print('payload decoded')
+            except Exception:
+                # If 'payload' isn't right, the OAK service might use .image_data
+                frame = cv2.imdecode(np.frombuffer(message.image_data, dtype="uint8"), cv2.IMREAD_UNCHANGED)
+                print('image data decoded')
+            
             if frame is None:
                 continue
             
@@ -155,11 +163,18 @@ async def follow(
         last_sent = 0.0
 
         while True:
+            # Show camera feeds
+            if front_camera_results['frame'] is not None:
+                cv2.imshow('Front Camera', front_camera_results['frame'])
+            if back_camera_results['frame'] is not None:
+                cv2.imshow('Back Camera', back_camera_results['frame'])
+            cv2.imshow("Follow Person (YOLO Distance)", frame)
+            
             now = time.time()
             age = 0.0
             if(front_camera_results['box'] is None and back_camera_results['box'] is None):
                 print('hi')
-                await asyncio.sleep(0.01)  # Yield control to the camera tasks. Without this, async code would be ignored in favor of this continue
+                await asyncio.sleep(0.1)  # Yield control to the camera tasks. Without this, async code would be ignored in favor of this continue
                 continue
             elif(front_camera_results['box'] is not None and back_camera_results['box'] is None):
                 frame = front_camera_results["frame"]
@@ -239,13 +254,6 @@ async def follow(
                     cv2.putText(frame, f"LOST target age={age:.2f}s (stopping)",
                                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-                # Show camera feeds
-                if front_camera_results['frame'] is not None:
-                    cv2.imshow('Front Camera', front_camera_results['frame'])
-                if back_camera_results['frame'] is not None:
-                    cv2.imshow('Back Camera', back_camera_results['frame'])
-                cv2.imshow("Follow Person (YOLO Distance)", frame)
-
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     await canbus_client.request_reply("/twist", Twist2d())
                     return
@@ -256,18 +264,35 @@ async def follow(
 
             await asyncio.sleep(0.001)
 
-    fwd_cam_task = asyncio.create_task(analyze_camera(cam_client, cam_cfg.subscriptions[0], "Front Camera", front_camera_results, inference_lock))
-    bkwd_cam_task = asyncio.create_task(analyze_camera(cam_client, cam_cfg.subscriptions[1], "Back Camera", back_camera_results, inference_lock))
-    print('test')
+
+    # Loop through the subscriptions in the oak config file
+    fwd_cam_task = None
+    bkwd_cam_task = None
+    for sub in cam_cfg.subscriptions:
+        # sub.uri.query will be "service_name=oak0" or "service_name=oak1"
+        if "oak0" in sub.uri.query:
+            print("Mapping oak0 to Front Camera Task")
+            fwd_cam_task = asyncio.create_task(
+                analyze_camera(cam_client, sub, "Front Camera", front_camera_results, inference_lock)
+            )
+        elif "oak1" in sub.uri.query:
+            print("Mapping oak1 to Back Camera Task")
+            bkwd_cam_task = asyncio.create_task(
+                analyze_camera(cam_client, sub, "Back Camera", back_camera_results, inference_lock)
+            )
+    
     try:
-        await control_loop()
+        await asyncio.gather(
+            fwd_cam_task,
+            bkwd_cam_task,
+            control_loop()
+        )
+    except asyncio.CancelledError:
+        pass
     finally:
         # SAFETY: Command the robot to stop immediately on exit/crash
         print("Stopping robot and cleaning up...")
         await canbus_client.request_reply("/twist", Twist2d())
-        
-        fwd_cam_task.cancel()
-        bkwd_cam_task.cancel()
         cv2.destroyAllWindows()
 
 
