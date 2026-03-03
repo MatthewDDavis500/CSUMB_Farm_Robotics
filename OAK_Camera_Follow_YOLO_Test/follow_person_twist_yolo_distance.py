@@ -12,8 +12,17 @@ from farm_ng.core.event_service_pb2 import EventServiceConfig
 from farm_ng.core.events_file_reader import proto_from_json_file
 from farm_ng.canbus.canbus_pb2 import Twist2d
 
+X1: int = 0
+Y1: int = 1
+X2: int = 2
+Y2: int = 3
+
 def clamp(x: float, lo: float, hi: float) -> float:
     return float(max(lo, min(hi, x)))
+
+def get_area(box):
+    '''Helper function for calculating the area of OpenCV detection boxes'''
+    return (box[X2] - box[X1]) * (box[Y2] - box[Y1])
 
 async def follow(
     *,
@@ -34,6 +43,8 @@ async def follow(
     send_hz: float,
     flip_steer: bool,
 ):
+    inference_lock = asyncio.Lock()  # This will be used to ensure both camera's don't use the same YOLO object at the same time
+    
     canbus_cfg: EventServiceConfig = proto_from_json_file('canbus_config.json', EventServiceConfig())
     cam_cfg: EventServiceConfig = proto_from_json_file('oak_config.json', EventServiceConfig())
 
@@ -42,7 +53,7 @@ async def follow(
 
     model = YOLO(model_name)
 
-    latest = {
+    front_camera_results = {
         "frame": None,
         "cx": None,
         "cx_smooth": None,
@@ -50,36 +61,48 @@ async def follow(
         "box": None,       # (x1,y1,x2,y2) full-res
         "score": None
     }
-
-    async def camera_loop():
-        sub = cam_cfg.subscriptions[0]
-
-        async for _event, msg in cam_client.subscribe(sub, decode=True):
-            frame = cv2.imdecode(np.frombuffer(msg.image_data, dtype=np.uint8), cv2.IMREAD_COLOR)
+    
+    back_camera_results = {
+        "frame": None,
+        "cx": None,
+        "cx_smooth": None,
+        "ts": 0.0,
+        "box": None,       # (x1,y1,x2,y2) full-res
+        "score": None
+    }
+    
+    async def analyze_camera(client: EventClient, subscription, window_name: str, model_results: dict, lock) -> None:
+        print(window_name)
+        """Helper function to find people in a specific camera subscription."""
+        async for event, message in client.subscribe(subscription, decode=True):
+            # Decode image
+            frame = cv2.imdecode(np.frombuffer(message.image_data, dtype="uint8"), cv2.IMREAD_UNCHANGED)
             if frame is None:
                 continue
-
-            h, w = frame.shape[:2]
-
+            
+            # Get image dimensions
+            height, width = frame.shape[:2]
+            
             # Optional downscale for faster inference
             if infer_scale != 1.0:
                 small = cv2.resize(frame, None, fx=infer_scale, fy=infer_scale)
             else:
                 small = frame
-
+            
             # YOLO inference; class 0 is "person" for COCO models
-            results = model.predict(
-                source=small,
-                conf=conf,
-                iou=iou,
-                classes=[0],
-                verbose=False,
-            )
-
+            async with lock:
+                results = model.predict(
+                    source=small,
+                    conf=conf,
+                    iou=iou,
+                    classes=[0],
+                    verbose=False,
+                )
+            
             cx = None
             best_box = None
             best_score = None
-
+            
             if results and len(results) > 0:
                 r = results[0]
                 if r.boxes is not None and len(r.boxes) > 0:
@@ -98,10 +121,10 @@ async def follow(
                         x1 /= infer_scale; y1 /= infer_scale
                         x2 /= infer_scale; y2 /= infer_scale
 
-                    x1 = int(clamp(x1, 0, w - 1))
-                    y1 = int(clamp(y1, 0, h - 1))
-                    x2 = int(clamp(x2, 0, w - 1))
-                    y2 = int(clamp(y2, 0, h - 1))
+                    x1 = int(clamp(x1, 0, width - 1))
+                    y1 = int(clamp(y1, 0, height - 1))
+                    x2 = int(clamp(x2, 0, width - 1))
+                    y2 = int(clamp(y2, 0, height - 1))
 
                     best_box = (x1, y1, x2, y2)
                     cx = (x1 + x2) // 2
@@ -110,33 +133,58 @@ async def follow(
                     cv2.circle(frame, (cx, (y1 + y2) // 2), 6, (0, 0, 255), -1)
                     cv2.putText(frame, f"person conf={best_score:.2f}", (x1, max(20, y1 - 10)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    
+                # Smooth cx (EMA)
+                cx_smooth = model_results["cx_smooth"]
+                if cx is not None:
+                    if cx_smooth is None:
+                        cx_smooth = float(cx)
+                    else:
+                        cx_smooth = (ema_alpha * cx_smooth) + ((1.0 - ema_alpha) * float(cx))
+                
+                # Store model's results
+                model_results["frame"] = frame
+                model_results["cx"] = cx
+                model_results["cx_smooth"] = cx_smooth
+                model_results["box"] = best_box
+                model_results["score"] = best_score
+                model_results["ts"] = time.time()
 
-            # Smooth cx (EMA)
-            cx_smooth = latest["cx_smooth"]
-            if cx is not None:
-                if cx_smooth is None:
-                    cx_smooth = float(cx)
-                else:
-                    cx_smooth = (ema_alpha * cx_smooth) + ((1.0 - ema_alpha) * float(cx))
-
-            latest["frame"] = frame
-            latest["cx"] = cx
-            latest["cx_smooth"] = cx_smooth
-            latest["box"] = best_box
-            latest["score"] = best_score
-            latest["ts"] = time.time()
-
-    async def control_loop():  #;lkhgfdsdfgjkl
+    async def control_loop():
         period = 1.0 / send_hz
         last_sent = 0.0
 
         while True:
             now = time.time()
-            frame = latest["frame"]
-            cx_smooth = latest["cx_smooth"]
-            box = latest["box"]
-            score = latest["score"]
-            age = now - latest["ts"]
+            age = 0.0
+            if(front_camera_results['box'] is None and back_camera_results['box'] is None):
+                print('hi')
+                await asyncio.sleep(0.01)  # Yield control to the camera tasks. Without this, async code would be ignored in favor of this continue
+                continue
+            elif(front_camera_results['box'] is not None and back_camera_results['box'] is None):
+                frame = front_camera_results["frame"]
+                cx_smooth = front_camera_results["cx_smooth"]
+                box = front_camera_results["box"]
+                score = front_camera_results["score"]
+                age = now - front_camera_results["ts"]
+            elif(front_camera_results['box'] is None and back_camera_results['box'] is not None):
+                frame = back_camera_results["frame"]
+                cx_smooth = back_camera_results["cx_smooth"]
+                box = back_camera_results["box"]
+                score = back_camera_results["score"]
+                age = now - back_camera_results["ts"]
+            elif(get_area(front_camera_results['box']) > get_area(back_camera_results['box'])):
+                frame = front_camera_results["frame"]
+                cx_smooth = front_camera_results["cx_smooth"]
+                box = front_camera_results["box"]
+                score = front_camera_results["score"]
+                age = now - front_camera_results["ts"]
+            else:
+                frame = back_camera_results["frame"]
+                cx_smooth = back_camera_results["cx_smooth"]
+                box = back_camera_results["box"]
+                score = back_camera_results["score"]
+                age = now - back_camera_results["ts"]
 
             twist = Twist2d()
             twist.linear_velocity_x = 0.0
@@ -191,6 +239,11 @@ async def follow(
                     cv2.putText(frame, f"LOST target age={age:.2f}s (stopping)",
                                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
+                # Show camera feeds
+                if front_camera_results['frame'] is not None:
+                    cv2.imshow('Front Camera', front_camera_results['frame'])
+                if back_camera_results['frame'] is not None:
+                    cv2.imshow('Back Camera', back_camera_results['frame'])
                 cv2.imshow("Follow Person (YOLO Distance)", frame)
 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -203,11 +256,18 @@ async def follow(
 
             await asyncio.sleep(0.001)
 
-    cam_task = asyncio.create_task(camera_loop())
+    fwd_cam_task = asyncio.create_task(analyze_camera(cam_client, cam_cfg.subscriptions[0], "Front Camera", front_camera_results, inference_lock))
+    bkwd_cam_task = asyncio.create_task(analyze_camera(cam_client, cam_cfg.subscriptions[1], "Back Camera", back_camera_results, inference_lock))
+    print('test')
     try:
         await control_loop()
     finally:
-        cam_task.cancel()
+        # SAFETY: Command the robot to stop immediately on exit/crash
+        print("Stopping robot and cleaning up...")
+        await canbus_client.request_reply("/twist", Twist2d())
+        
+        fwd_cam_task.cancel()
+        bkwd_cam_task.cancel()
         cv2.destroyAllWindows()
 
 
