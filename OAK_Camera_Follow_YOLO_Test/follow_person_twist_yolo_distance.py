@@ -34,7 +34,6 @@ def clamp(value: float, min: float, max: float) -> float:
     temp = min(max, value)
     return float(max(min, temp))
 
-
 def parse_service_name(query: str) -> str:
     # query like: "service_name=oak0"
     if not query:
@@ -57,7 +56,7 @@ async def follow(
     infer_scale: float,
     ema_alpha: float,
     # Distance control
-    target_h_frac: float,
+    target_height_fraction: float,
     h_deadband: float,
     kp_linear: float,
     linear_max_fwd: float,
@@ -83,18 +82,24 @@ async def follow(
     model = YOLO(model_name)
 
     # Per-camera latest state
-    # Each entry stores: frame, cx_smooth, bbox, h_frac, score, ts
-    states = {}
-    for sub in cam_cfg.subscriptions:
-        cam_name = parse_service_name(sub.uri.query)
-        states[cam_name] = {
+    states = {
+        'oak0': {
+            "frame": None,            # Image from the Oak camera to be altered and displayed by OpenCV
+            "target_center_x": None,  # Target person's horizontal center, smoothed to avoid motor jittering
+            "box": None,              # Bounding box dimentions in full-res: (x1,y1,x2,y2)
+            "height_fraction": None,  # Bounding box height fraction of frame
+            "score": None,            # Model confidence in person detection
+            "timestamp": 0.0,         # Timestamp of current state
+        },
+        'oak1': {
             "frame": None,
-            "cx_smooth": None,
-            "box": None,      # (x1,y1,x2,y2) in full-res
-            "h_frac": None,   # bbox height fraction of frame
+            "target_center_x": None,
+            "box": None,
+            "height_fraction": None,
             "score": None,
-            "ts": 0.0,
+            "timestamp": 0.0,
         }
+    }
 
     async def camera_worker(sub):
         cam_name = parse_service_name(sub.uri.query)
@@ -125,7 +130,7 @@ async def follow(
             best_box = None
             best_score = None
             cx = None
-            h_frac = None
+            height_fraction = None
 
             if results and len(results) > 0:
                 r = results[0]
@@ -154,14 +159,14 @@ async def follow(
                     cx = (x1 + x2) // 2
 
                     box_h = max(1, (y2 - y1))
-                    h_frac = box_h / float(h)
+                    height_fraction = box_h / float(h)
 
                     # Draw bbox
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     cv2.circle(frame, (cx, (y1 + y2) // 2), 6, (0, 0, 255), -1)
                     cv2.putText(
                         frame,
-                        f"{cam_name} conf={best_score:.2f} h={h_frac:.2f}",
+                        f"{cam_name} conf={best_score:.2f} h={height_fraction:.2f}",
                         (x1, max(20, y1 - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.7,
@@ -170,19 +175,19 @@ async def follow(
                     )
 
             # EMA smoothing for cx
-            cx_smooth = states[cam_name]["cx_smooth"]
+            target_center_x = states[cam_name]["target_center_x"]
             if cx is not None:
-                if cx_smooth is None:
-                    cx_smooth = float(cx)
+                if target_center_x is None:
+                    target_center_x = float(cx)
                 else:
-                    cx_smooth = (ema_alpha * cx_smooth) + ((1.0 - ema_alpha) * float(cx))
+                    target_center_x = (ema_alpha * target_center_x) + ((1.0 - ema_alpha) * float(cx))
 
             states[cam_name]["frame"] = frame
-            states[cam_name]["cx_smooth"] = cx_smooth
+            states[cam_name]["target_center_x"] = target_center_x
             states[cam_name]["box"] = best_box
-            states[cam_name]["h_frac"] = h_frac
+            states[cam_name]["height_fraction"] = height_fraction
             states[cam_name]["score"] = best_score
-            states[cam_name]["ts"] = time.time()
+            states[cam_name]["timestamp"] = time.time()
 
             # show each camera stream
             cv2.imshow(cam_name, frame)
@@ -204,15 +209,15 @@ async def follow(
             best_h = -1.0
 
             for cam_name, st in states.items():
-                age = now - st["ts"]
+                age = now - st["timestamp"]
                 if age > lost_timeout_s:
                     continue
-                if st["box"] is None or st["cx_smooth"] is None or st["h_frac"] is None:
+                if st["box"] is None or st["target_center_x"] is None or st["height_fraction"] is None:
                     continue
 
                 # "Closest overall" = largest bbox height fraction
-                if st["h_frac"] > best_h:
-                    best_h = st["h_frac"]
+                if st["height_fraction"] > best_h:
+                    best_h = st["height_fraction"]
                     best_cam = cam_name
 
             twist = Twist2d()
@@ -222,17 +227,17 @@ async def follow(
             if best_cam is not None:
                 st = states[best_cam]
                 frame = st["frame"]
-                cx_smooth = st["cx_smooth"]
+                target_center_x = st["target_center_x"]
                 box = st["box"]
-                h_frac = st["h_frac"]
+                height_fraction = st["height_fraction"]
                 score = st["score"]
 
                 h, w = frame.shape[:2]
                 center = w // 2
                 deadband_px = int(w * deadband_px_frac)
 
-                # Distance control: target_h_frac (your requested 0.80 default)
-                dist_err = target_h_frac - float(h_frac)  # >0 => too far => forward; <0 => too close => reverse
+                # Distance control: target_height_fraction (your requested 0.80 default)
+                dist_err = target_height_fraction - float(height_fraction)  # >0 => too far => forward; <0 => too close => reverse
 
                 if abs(dist_err) <= h_deadband:
                     lin_cmd = 0.0
@@ -241,7 +246,7 @@ async def follow(
                     lin_cmd = clamp(lin_cmd, -linear_max_rev, linear_max_fwd)
 
                 # Heading control (flipped by default per your request)
-                steer_err = float(cx_smooth - center)
+                steer_err = float(target_center_x - center)
                 if flip_steer:
                     steer_err = -steer_err
 
@@ -259,7 +264,7 @@ async def follow(
                 cv2.line(active, (center, 0), (center, h), (255, 255, 0), 2)
                 cv2.putText(active, f"ACTIVE: {best_cam}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
-                cv2.putText(active, f"h_frac={h_frac:.2f} target={target_h_frac:.2f} lin={lin_cmd:.2f} ang={ang_cmd:.2f}",
+                cv2.putText(active, f"height_fraction={height_fraction:.2f} target={target_height_fraction:.2f} lin={lin_cmd:.2f} ang={ang_cmd:.2f}",
                             (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 cv2.putText(active, f"conf={0.0 if score is None else score:.2f} flip_steer={flip_steer}",
                             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
@@ -328,7 +333,7 @@ if __name__ == "__main__":
             iou=args.iou,
             infer_scale=args.infer_scale,
             ema_alpha=args.ema,
-            target_h_frac=args.target_h,
+            target_height_fraction=args.target_h,
             h_deadband=args.h_deadband,
             kp_linear=args.kp_linear,
             linear_max_fwd=args.max_fwd,
