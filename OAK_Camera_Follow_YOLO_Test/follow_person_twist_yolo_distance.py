@@ -12,6 +12,9 @@ from farm_ng.core.event_service_pb2 import EventServiceConfig
 from farm_ng.core.events_file_reader import proto_from_json_file
 from farm_ng.canbus.canbus_pb2 import Twist2d
 
+OAK_CONFIG = 'oak_config.json'
+CANBUS_CONFIG = 'canbus_config.json'
+
 
 def clamp(value: float, min: float, max: float) -> float:
     '''
@@ -317,7 +320,7 @@ if __name__ == "__main__":
 
     ap.add_argument("--flip-steer", action="store_true", default=True)  # flipped by default
     ap.add_argument("--kp-ang", type=float, default=1.2)
-    ap.add_argument("--max-angular", type=float, default=0.8)
+    ap.add_argument("--max-angular", type=float, default=0.5)
     ap.add_argument("--deadband", type=float, default=0.10)
 
     ap.add_argument("--lost-timeout", type=float, default=0.8)
@@ -346,3 +349,6 @@ if __name__ == "__main__":
             send_hz=args.hz,
         )
     )
+
+## Alex's Hotspot Amiga IP: 10.179.67.170
+## Matthew's Hotspot Amiga IP: 172.20.10.4
