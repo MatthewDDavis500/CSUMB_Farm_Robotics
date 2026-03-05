@@ -37,17 +37,6 @@ def clamp(value: float, min: float, max: float) -> float:
     temp = min(max, value)
     return float(max(min, temp))
 
-def parse_service_name(query: str) -> str:
-    # query like: "service_name=oak0"
-    if not query:
-        return "camera"
-    parts = {}
-    for kv in query.split("&"):
-        if "=" in kv:
-            k, v = kv.split("=", 1)
-            parts[k] = v
-    return parts.get("service_name", "camera")
-
 
 async def follow(
     canbus_cfg_path: Path,
@@ -104,8 +93,7 @@ async def follow(
         }
     }
 
-    async def camera_worker(sub):
-        cam_name = parse_service_name(sub.uri.query)
+    async def camera_worker(sub, cam_name):
         cv2.namedWindow(cam_name, cv2.WINDOW_NORMAL)
 
         async for event, msg in cam_client.subscribe(sub, decode=True):
@@ -293,7 +281,20 @@ async def follow(
             await asyncio.sleep(0.001)
 
     # Run camera workers (2 cameras) + control loop
-    cam_tasks = [asyncio.create_task(camera_worker(sub)) for sub in cam_cfg.subscriptions]
+    cam_tasks = []
+    name = ''
+    for sub in cam_cfg.subscriptions:
+        # Determine camera name
+        if 'oak0' in sub.uri.query:
+            name = 'oak0'
+        elif 'oak1' in sub.uri.query:
+            name = 'oak1'
+        else:
+            name = 'camera'
+            
+        # Add asynchronous task to task list
+        cam_tasks.append(asyncio.create_task(camera_worker(sub, name)))
+        
     try:
         await control_loop()
     finally:
