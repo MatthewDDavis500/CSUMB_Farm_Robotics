@@ -285,9 +285,9 @@ async def follow(
     name = ''
     for sub in cam_cfg.subscriptions:
         # Determine camera name
-        if 'oak0' in sub.uri.query:
+        if 'oak0' in sub['uri']['query']:
             name = 'oak0'
-        elif 'oak1' in sub.uri.query:
+        elif 'oak1' in sub['uri']['query']:
             name = 'oak1'
         else:
             name = 'camera'
