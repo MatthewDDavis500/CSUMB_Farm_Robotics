@@ -288,39 +288,50 @@ async def follow():
                 height_fraction = cam_state["height_fraction"]
                 score = cam_state["score"]
 
+                # Get details about frame dimensions
                 height, width = frame.shape[:2]
                 center = width // 2
-                deadband_px = int(width * ANGULAR_DEADZONE)
+                horizontal_deadzone = int(width * ANGULAR_DEADZONE)
 
-                # Distance control: target_height_fraction (your requested 0.80 default)
-                dist_err = TARGET_HEIGHT - float(height_fraction)  # >0 => too far => forward; <0 => too close => reverse
+                # Distance control based on height of bounding box
+                # A positive error means the bounding box is shorter (and thus farther) than the target, so robot needs to move forward
+                # A negative error means the bounding box is taller (and thus closer) than the target, so robot needs to move backward
+                height_error = TARGET_HEIGHT - float(height_fraction)
 
-                if abs(dist_err) <= HEIGHT_DEADZONE:
-                    lin_cmd = 0.0
+                # Linear movement
+                if abs(height_error) <= HEIGHT_DEADZONE:
+                    # If error is within the height deadzone, no linear adjustment is needed
+                    linear_command = 0.0
                 else:
-                    lin_cmd = KP_LINEAR * dist_err
-                    lin_cmd = clamp(lin_cmd, -MAX_REVERSE, MAX_FORWARD)
+                    # Compute a linear velocity based on the current error and clamp it between velocity limits
+                    linear_command = KP_LINEAR * height_error
+                    linear_command = clamp(linear_command, -MAX_REVERSE, MAX_FORWARD)
 
-                # Heading control (flipped by default per your request)
-                steer_err = float(target_center_x - center)
+                # Heading control based on bounding box's distance from the center of the frame
+                # Positive/negative error will determine if robot needs to turn left/right to center on the bounding box
+                angular_error = float(target_center_x - center)
+                
+                # Angular movement
                 if FLIP_STEER:
-                    steer_err = -steer_err
+                    angular_error = -angular_error
 
-                if abs(steer_err) <= deadband_px:
-                    ang_cmd = 0.0
+                if abs(angular_error) <= horizontal_deadzone:
+                    # If error is within the horizontal deadzone, no angular adjustment is needed
+                    angular_command = 0.0
                 else:
-                    ang_cmd = KP_ANGULAR * (steer_err / center)
-                    ang_cmd = clamp(ang_cmd, -MAX_ANGULAR, MAX_ANGULAR)
+                    # Compute an angular velocity based on the current error and clamp it between velocity limits
+                    angular_command = KP_ANGULAR * (angular_error / center)
+                    angular_command = clamp(angular_command, -MAX_ANGULAR, MAX_ANGULAR)
 
-                twist.linear_velocity_x = float(lin_cmd)
-                twist.angular_velocity = float(ang_cmd)
+                twist.linear_velocity_x = float(linear_command)
+                twist.angular_velocity = float(angular_command)
 
                 # Active target debug window
                 active = frame.copy()
                 cv2.line(active, (center, 0), (center, height), (255, 255, 0), 2)
                 cv2.putText(active, f"ACTIVE: {best_cam}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
-                cv2.putText(active, f"height_fraction={height_fraction:.2f} target={TARGET_HEIGHT:.2f} lin={lin_cmd:.2f} ang={ang_cmd:.2f}",
+                cv2.putText(active, f"height_fraction={height_fraction:.2f} target={TARGET_HEIGHT:.2f} lin={linear_command:.2f} ang={ang_cmd:.2f}",
                             (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 cv2.putText(active, f"conf={0.0 if score is None else score:.2f} flip_steer={FLIP_STEER}",
                             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
