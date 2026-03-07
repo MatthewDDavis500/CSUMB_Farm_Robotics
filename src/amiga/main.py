@@ -137,6 +137,7 @@ async def follow():
                 source=yolo_frame,
                 conf=CONFIDENCE_THRESHOLD,
                 iou=IOU,
+                stream_buffer=True,
                 classes=[0],
                 verbose=False,
             )
