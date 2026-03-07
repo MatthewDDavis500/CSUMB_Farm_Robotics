@@ -91,6 +91,9 @@ async def follow():
 
     # Load the YOLO model
     model = YOLO(MODEL_NAME)
+    
+    # Lock ensures that only one camera worker uses the model at a time
+    inference_lock = asyncio.Lock()
 
     # Per-camera latest state
     states = {
@@ -144,14 +147,15 @@ async def follow():
             else:
                 yolo_frame = frame
 
-            # Set up the YOLO model with our constant parameters
-            results = model.predict(
-                source=yolo_frame,          # Load our camera frame into the model
-                conf=CONFIDENCE_THRESHOLD,
-                iou=IOU,
-                classes=[0],                # Only detect people
-                verbose=False,              # Do not output detection logs to terminal
-            )
+            # Run the YOLO model with our constant parameters, using the asynch lock to ensure only this worker can use the model right now
+            async with inference_lock:
+                results = model.predict(
+                    source=yolo_frame,          # Load our camera frame into the model
+                    conf=CONFIDENCE_THRESHOLD,
+                    iou=IOU,
+                    classes=[0],                # Only detect people
+                    verbose=False,              # Do not output detection logs to terminal
+                )
 
             best_box = None
             best_score = None
@@ -256,7 +260,8 @@ async def follow():
 
             for cam_name, cam_state in states.items():
                 # Show camera feed
-                cv2.imshow(cam_name, cam_state['frame'])
+                if cam_state['frame'] is not None:
+                    cv2.imshow(cam_name, cam_state['frame'])
                 
                 # Find how long ago the last state update was
                 age = now - cam_state["timestamp"]
