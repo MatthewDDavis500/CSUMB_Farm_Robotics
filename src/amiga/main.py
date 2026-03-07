@@ -132,12 +132,11 @@ async def follow():
             else:
                 yolo_frame = frame
 
-            # Set up the YOLO model with our constant parameters (COCO class 0 only detects people)
+            # Set up the YOLO model with our constant parameters (COCO class 0 only detects people) 
             results = model.predict(
                 source=yolo_frame,
                 conf=CONFIDENCE_THRESHOLD,
                 iou=IOU,
-                stream_buffer=True,
                 classes=[0],
                 verbose=False,
             )
