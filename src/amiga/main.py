@@ -12,12 +12,14 @@ from farm_ng.core.event_service_pb2 import EventServiceConfig  # type: ignore
 from farm_ng.core.events_file_reader import proto_from_json_file # type: ignore
 from farm_ng.canbus.canbus_pb2 import Twist2d  # type: ignore
 
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+
 ### Config File Paths ###
-OAK_CONFIG = 'oak_config.json'
-CANBUS_CONFIG = 'canbus_config.json'
+OAK_CONFIG = str(ROOT_DIR / 'config' / 'oak_config.json')
+CANBUS_CONFIG = str(ROOT_DIR / 'config' / 'canbus_config.json')
 
 ### Model Parameters ###
-MODEL_NAME = 'yolov8n.pt'    # (String) YOLO file to load
+MODEL_NAME = str(ROOT_DIR / 'data' / 'models' / 'yolov8n.pt')    # YOLO model to load
 CONFIDENCE_THRESHOLD = 0.65  # (0-1 Scale) How confident does the model need to be to consider an object a person?
 IOU = 0.5                    # (0-1 Scale) Intersection over union. How much do two bounding boxes need to overlap for the model to consider them the same object and only take the one with the heighest confindence?
 FRAME_SCALING = 0.6          # (Proportional Multiplier) Ratio by which to scale the camera frames before passing to model. Smaller numbers means smaller image size, which means faster computation but less accuracy
