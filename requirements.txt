@@ -1,0 +1,20 @@
+# --- Amiga Core & Communication ---
+farm-ng-amiga==2.3.4
+farm-ng-core==2.3.2
+farm-ng-package==0.1.5
+grpcio==1.76.0
+grpcio-tools==1.64.1
+protobuf==4.25.8
+
+# --- Vision & AI Inference ---
+ultralytics==8.4.19
+ultralytics-thop==2.0.18
+torch==2.10.0
+torchvision==0.25.0
+opencv-python==4.6.0.66
+depthai==3.3.0
+
+# --- Core Dependencies ---
+numpy==1.26.4
+PyYAML==6.0.3
+requests==2.32.5
