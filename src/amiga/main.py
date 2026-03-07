@@ -25,6 +25,12 @@ IOU = 0.5                    # (0-1 Scale) Intersection over union. How much do 
 FRAME_SCALING = 0.6          # (Proportional Multiplier) Ratio by which to scale the camera frames before passing to model. Smaller numbers means smaller image size, which means faster computation but less accuracy
 EMA_ALPHA = 0.85             # (0-1 Scale) Smoothness of reaction. Higher values means more memory (previous frames) is considered, so smoother but slower reactions. Lower values mean more new frames are considered, resulting in faster but possibly chattery responses
 
+### Detection Box Vertex Indicies ###
+X1 = 0
+Y1 = 1
+X2 = 2
+Y2 = 3
+
 ### Distance Control Parameters ###
 TARGET_HEIGHT = 0.8         # (Fraction) What fraction of the frame vertically should the detected person be ideally filling? Higher values means closer following
 HEIGHT_DEADZONE = 0.05      # (Fraction) Deadzone for distance control. Having a detected person filling this much more or less than the TARGET_HEIGHT will be acceptable
@@ -132,13 +138,13 @@ async def follow():
             else:
                 yolo_frame = frame
 
-            # Set up the YOLO model with our constant parameters (COCO class 0 only detects people) 
+            # Set up the YOLO model with our constant parameters
             results = model.predict(
-                source=yolo_frame,
+                source=yolo_frame,          # Load our camera frame into the model
                 conf=CONFIDENCE_THRESHOLD,
                 iou=IOU,
-                classes=[0],
-                verbose=False,
+                classes=[0],                # Only detect people
+                verbose=False,              # Do not output detection logs to terminal
             )
 
             best_box = None
@@ -146,28 +152,35 @@ async def follow():
             cx = None
             height_fraction = None
 
+            # If the model returns results for any frames, look at the first (and only) frame
             if results and len(results) > 0:
-                r = results[0]
-                if r.boxes is not None and len(r.boxes) > 0:
-                    boxes_xyxy = r.boxes.xyxy.cpu().numpy()
-                    scores = r.boxes.conf.cpu().numpy()
+                result = results[0]
+                
+                # If the model detected anything in the frame
+                if result.boxes is not None and len(result.boxes) > 0:
+                    # Bring the boxes (in x1,y1,x2,y2 format) and their corresponding confidence scores data from the GPU to the CPU in NumPy array format
+                    boxes_xyxy = result.boxes.xyxy.cpu().numpy()
+                    scores = result.boxes.conf.cpu().numpy()
 
-                    # Closest in THIS camera = largest bbox area
-                    areas = (boxes_xyxy[:, 2] - boxes_xyxy[:, 0]) * (boxes_xyxy[:, 3] - boxes_xyxy[:, 1])
-                    idx = int(np.argmax(areas))
+                    # Calculate the areas of all of the boxes, and find the index of the largest area (corresponding to the largest box)
+                    areas = (boxes_xyxy[:, X2] - boxes_xyxy[:, X1]) * (boxes_xyxy[:, Y2] - boxes_xyxy[:, Y1])  # For all boxes, store the area (width (x2-x1) * height (y2-y1))
+                    largest_area_id = int(np.argmax(areas))
 
-                    x1, y1, x2, y2 = boxes_xyxy[idx].tolist()
-                    best_score = float(scores[idx])
+                    # Use the index of the largest area to get the largest (and closest) detection result details
+                    x1, y1, x2, y2 = boxes_xyxy[largest_area_id].tolist()
+                    best_score = float(scores[largest_area_id])
 
-                    # Scale to full-res
+                    # Rescale box vertices back to full-resolution if frame was previously downscaled
                     if FRAME_SCALING != 1.0:
                         x1 /= FRAME_SCALING; y1 /= FRAME_SCALING
                         x2 /= FRAME_SCALING; y2 /= FRAME_SCALING
 
+                    # Ensure that the box remains completely within frame after rescaling
                     x1 = int(clamp(x1, 0, frame_width - 1))
                     y1 = int(clamp(y1, 0, frame_height - 1))
                     x2 = int(clamp(x2, 0, frame_width - 1))
                     y2 = int(clamp(y2, 0, frame_height - 1))
+
 
                     best_box = (x1, y1, x2, y2)
                     cx = (x1 + x2) // 2
