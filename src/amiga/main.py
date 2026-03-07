@@ -320,7 +320,7 @@ async def follow():
                     angular_command = 0.0
                 else:
                     # Compute an angular velocity based on the current error and clamp it between velocity limits
-                    angular_command = KP_ANGULAR * (angular_error / center)
+                    angular_command = KP_ANGULAR * (angular_error / max(1, center))
                     angular_command = clamp(angular_command, -MAX_ANGULAR, MAX_ANGULAR)
 
                 # Store the linear and angluar velocities in the twist command
