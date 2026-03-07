@@ -32,21 +32,21 @@ X2 = 2
 Y2 = 3
 
 ### Distance Control Parameters ###
-TARGET_HEIGHT = 0.8         # (Fraction) What fraction of the frame vertically should the detected person be ideally filling? Higher values means closer following
-HEIGHT_DEADZONE = 0.05      # (Fraction) Deadzone for distance control. Having a detected person filling this much more or less than the TARGET_HEIGHT will be acceptable
-KP_LINEAR = 0.8             # (Gain) Proportion for how fast the robot will move forward or backward based on the current error
-MAX_FORWARD = 0.25          # (Meters/Second) Maximum forward velocity
-MAX_REVERSE = 0.18          # (Meters/Second) Maximum reverse velocity
+TARGET_HEIGHT = 0.8          # (Fraction) What fraction of the frame vertically should the detected person be ideally filling? Higher values means closer following
+HEIGHT_DEADZONE = 0.05       # (Fraction) Deadzone for distance control. Having a detected person filling this much more or less than the TARGET_HEIGHT will be acceptable
+KP_LINEAR = 0.8              # (Gain) Proportion for how fast the robot will move forward or backward based on the current error
+MAX_FORWARD = 0.25           # (Meters/Second) Maximum forward velocity
+MAX_REVERSE = 0.18           # (Meters/Second) Maximum reverse velocity
 
 ### Heading Control Parameters ###
-FLIP_STEER = True           # (Boolean) If True, inverts steering
-KP_ANGULAR = 1.2            # (Gain) Proportion for how fast the robot will turn based on the current error
-MAX_ANGULAR = 0.5           # (Radians/Second) Maximum angular velocity
-ANGULAR_DEADZONE = 0.1      # (Fraction) Deadzone for turning. Having a detected person within this much of the center will be acceptable
+FLIP_STEER = True            # (Boolean) If True, inverts steering
+KP_ANGULAR = 1.2             # (Gain) Proportion for how fast the robot will turn based on the current error
+MAX_ANGULAR = 0.5            # (Radians/Second) Maximum angular velocity
+ANGULAR_DEADZONE = 0.1       # (Fraction) Deadzone for turning. Having a detected person within this much of the center will be acceptable
 
 ### Safety/Performance ###
-LOST_TIMEOUT = 0.8          # (Seconds) How long the robot will continue movement before stopping completely if it doesn't detect anyone
-SEND_HZ = 20.0              # (Hertz: X/Second) How many times per second twist commands will be sent to the motors
+LOST_TIMEOUT = 0.8           # (Seconds) How long the robot will continue movement before stopping completely if it doesn't detect anyone
+SEND_HZ = 20.0               # (Hertz: X/Second) How many times per second twist commands will be sent to the motors
 
 
 def clamp(value: float, min: float, max: float) -> float:
@@ -67,10 +67,20 @@ def clamp(value: float, min: float, max: float) -> float:
             If value is above max, returns max.
             If value is below min, returns min.
     '''
-    temp = min(max, value)
-    return float(max(min, temp))
+    temp = min(max, value)  # Constrain using the max value
+    return float(max(min, temp)) # Constrain using the min value
 
 async def follow():
+    '''
+        Asynchronous function for following a person with the robot.
+        
+        This function uses two different functions to operate:
+            camera_worker(sub, cam_name) - Use the YOLO detection algorithm to detect people in camera frames.
+            control_loop() - Use states updated by camera workers to send twist commands to the motors.
+            
+        Results:
+            Robot moves to follow the closest person in the camera frames.
+    '''
     # Import configuration from JSON config files
     canbus_config: EventServiceConfig = proto_from_json_file(CANBUS_CONFIG, EventServiceConfig())
     oak_config: EventServiceConfig = proto_from_json_file(OAK_CONFIG, EventServiceConfig())
@@ -226,9 +236,18 @@ async def follow():
                 return
 
     async def control_loop():
-        period = 1.0 / SEND_HZ
+        '''
+            Asynchronous function for controlling the robot's movement.
+
+            Uses updating camera states to send twist commands to the robot's motors.
+            
+            Results:
+                Sends twist commands to motors.
+        '''
+        period = 1.0 / SEND_HZ  # How many seconds between each motor twist message send
         last_sent = 0.0
 
+        # Create a unique window for the camera feed with the closest detected person
         cv2.namedWindow("ACTIVE_TARGET", cv2.WINDOW_NORMAL)
 
         while True:
