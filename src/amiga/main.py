@@ -3,14 +3,14 @@ import asyncio
 import time
 from pathlib import Path
 
-import cv2  # type: ignore
-import numpy as np  # type: ignore
-from ultralytics import YOLO  # type: ignore
+import cv2  
+import numpy as np  
+from ultralytics import YOLO  
 
-from farm_ng.core.event_client import EventClient  # type: ignore
-from farm_ng.core.event_service_pb2 import EventServiceConfig  # type: ignore
-from farm_ng.core.events_file_reader import proto_from_json_file # type: ignore
-from farm_ng.canbus.canbus_pb2 import Twist2d  # type: ignore
+from farm_ng.core.event_client import EventClient  
+from farm_ng.core.event_service_pb2 import EventServiceConfig  
+from farm_ng.core.events_file_reader import proto_from_json_file 
+from farm_ng.canbus.canbus_pb2 import Twist2d  
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
