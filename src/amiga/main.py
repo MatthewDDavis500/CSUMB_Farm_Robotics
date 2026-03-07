@@ -64,13 +64,14 @@ def clamp(value: float, min: float, max: float) -> float:
 
 
 async def follow():
-    canbus_cfg: EventServiceConfig = proto_from_json_file(CANBUS_CONFIG, EventServiceConfig())
-    cam_cfg: EventServiceConfig = proto_from_json_file(OAK_CONFIG, EventServiceConfig())
+    # Import configuration from JSON config files
+    canbus_config: EventServiceConfig = proto_from_json_file(CANBUS_CONFIG, EventServiceConfig())
+    oak_config: EventServiceConfig = proto_from_json_file(OAK_CONFIG, EventServiceConfig())
 
-    canbus_client = EventClient(canbus_cfg)
-    cam_client = EventClient(cam_cfg)
+    canbus_client = EventClient(canbus_config)
+    cam_client = EventClient(oak_config)
 
-    if len(cam_cfg.subscriptions) < 2:
+    if len(oak_config.subscriptions) < 2:
         raise ValueError("camera config must contain 2 subscriptions (oak0 + oak1)")
 
     model = YOLO(MODEL_NAME)
@@ -285,7 +286,7 @@ async def follow():
     # Run camera workers (2 cameras) + control loop
     cam_tasks = []
     name = ''
-    for sub in cam_cfg.subscriptions:
+    for sub in oak_config.subscriptions:
         # Determine camera name
         if 'oak0' in sub['uri']['query']:
             name = 'oak0'
