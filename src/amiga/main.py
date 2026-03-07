@@ -278,7 +278,7 @@ async def follow():
             twist.linear_velocity_x = 0.0
             twist.angular_velocity = 0.0
 
-            # Send a twist command to the robot motors based on the camera with the closest detected person, if there is one
+            # Send a twist command to the robot motors based on the camera with the closest detected person. If there is none, stop.
             if best_cam is not None:
                 # Get details from the camera state
                 cam_state = states[best_cam]
@@ -323,22 +323,22 @@ async def follow():
                     angular_command = KP_ANGULAR * (angular_error / center)
                     angular_command = clamp(angular_command, -MAX_ANGULAR, MAX_ANGULAR)
 
+                # Store the linear and angluar velocities in the twist command
                 twist.linear_velocity_x = float(linear_command)
                 twist.angular_velocity = float(angular_command)
 
-                # Active target debug window
+                # Display the active camera feed and twist details
                 active = frame.copy()
                 cv2.line(active, (center, 0), (center, height), (255, 255, 0), 2)
                 cv2.putText(active, f"ACTIVE: {best_cam}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
-                cv2.putText(active, f"height_fraction={height_fraction:.2f} target={TARGET_HEIGHT:.2f} lin={linear_command:.2f} ang={ang_cmd:.2f}",
+                cv2.putText(active, f"height_fraction={height_fraction:.2f} target={TARGET_HEIGHT:.2f} lin={linear_command:.2f} ang={angular_command:.2f}",
                             (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 cv2.putText(active, f"conf={0.0 if score is None else score:.2f} flip_steer={FLIP_STEER}",
                             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
                 cv2.imshow("ACTIVE_TARGET", active)
             else:
-                # No target => stop
+                # Stop if there is no detected target
                 blank = np.zeros((240, 640, 3), dtype=np.uint8)
                 cv2.putText(blank, "NO TARGET (stopping)", (20, 120),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
@@ -349,10 +349,10 @@ async def follow():
                 await canbus_client.request_reply("/twist", Twist2d())
                 return
 
-            # Publish at fixed rate
+            # Publish at fixed rate by waiting until the specified amount of seconds has passed since last publish
             if now - last_sent >= period:
-                await canbus_client.request_reply("/twist", twist)
-                last_sent = now
+                await canbus_client.request_reply("/twist", twist)  # Send the twist command to the robot
+                last_sent = now  # Update time last sent
 
             await asyncio.sleep(0.001)
 
