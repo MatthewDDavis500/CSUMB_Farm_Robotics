@@ -64,14 +64,14 @@ def clamp(value: float, min: float, max: float) -> float:
     temp = min(max, value)
     return float(max(min, temp))
 
-
 async def follow():
     # Import configuration from JSON config files
     canbus_config: EventServiceConfig = proto_from_json_file(CANBUS_CONFIG, EventServiceConfig())
     oak_config: EventServiceConfig = proto_from_json_file(OAK_CONFIG, EventServiceConfig())
 
+    # Create clients for the canbus and oak cameras
     canbus_client = EventClient(canbus_config)
-    cam_client = EventClient(oak_config)
+    oak_client = EventClient(oak_config)
 
     if len(oak_config.subscriptions) < 2:
         raise ValueError("camera config must contain 2 subscriptions (oak0 + oak1)")
@@ -101,7 +101,7 @@ async def follow():
     async def camera_worker(sub, cam_name):
         cv2.namedWindow(cam_name, cv2.WINDOW_NORMAL)
 
-        async for event, msg in cam_client.subscribe(sub, decode=True):
+        async for event, msg in oak_client.subscribe(sub, decode=True):
             frame = cv2.imdecode(np.frombuffer(msg.image_data, dtype=np.uint8), cv2.IMREAD_COLOR)
             if frame is None:
                 continue
@@ -307,9 +307,7 @@ async def follow():
             t.cancel()
         cv2.destroyAllWindows()
 
-
 if __name__ == "__main__":
-
     asyncio.run(
         follow()
     )
