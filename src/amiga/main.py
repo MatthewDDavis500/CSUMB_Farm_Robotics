@@ -255,35 +255,42 @@ async def follow():
 
             # Choose the best/closest target across cameras
             best_cam = None
-            best_h = -1.0
+            best_height = -1.0  # The y-values are -1 to 0. height = -1 is the bottom of the frame and height = 0 is the top of the frame
 
-            for cam_name, st in states.items():
-                age = now - st["timestamp"]
+            for cam_name, cam_state in states.items():
+                # Find how long ago the last state update was
+                age = now - cam_state["timestamp"]
+                
+                # If the last time the state was updated was longer than the timeout constant, do nothing
                 if age > LOST_TIMEOUT:
                     continue
-                if st["box"] is None or st["target_center_x"] is None or st["height_fraction"] is None:
+                # If any critical information is missing from the state, do nothing
+                if cam_state["box"] is None or cam_state["target_center_x"] is None or cam_state["height_fraction"] is None:
                     continue
 
-                # "Closest overall" = largest bbox height fraction
-                if st["height_fraction"] > best_h:
-                    best_h = st["height_fraction"]
+                # Find the camera with the closest detected person (tallest bounding box)
+                if cam_state["height_fraction"] > best_height:
+                    best_height = cam_state["height_fraction"]
                     best_cam = cam_name
 
+            # Create a twist command initialized to no movement
             twist = Twist2d()
             twist.linear_velocity_x = 0.0
             twist.angular_velocity = 0.0
 
+            # Send a twist command to the robot motors based on the camera with the closest detected person, if there is one
             if best_cam is not None:
-                st = states[best_cam]
-                frame = st["frame"]
-                target_center_x = st["target_center_x"]
-                box = st["box"]
-                height_fraction = st["height_fraction"]
-                score = st["score"]
+                # Get details from the camera state
+                cam_state = states[best_cam]
+                frame = cam_state["frame"]
+                target_center_x = cam_state["target_center_x"]
+                box = cam_state["box"]
+                height_fraction = cam_state["height_fraction"]
+                score = cam_state["score"]
 
-                h, w = frame.shape[:2]
-                center = w // 2
-                deadband_px = int(w * ANGULAR_DEADZONE)
+                height, width = frame.shape[:2]
+                center = width // 2
+                deadband_px = int(width * ANGULAR_DEADZONE)
 
                 # Distance control: target_height_fraction (your requested 0.80 default)
                 dist_err = TARGET_HEIGHT - float(height_fraction)  # >0 => too far => forward; <0 => too close => reverse
@@ -310,7 +317,7 @@ async def follow():
 
                 # Active target debug window
                 active = frame.copy()
-                cv2.line(active, (center, 0), (center, h), (255, 255, 0), 2)
+                cv2.line(active, (center, 0), (center, height), (255, 255, 0), 2)
                 cv2.putText(active, f"ACTIVE: {best_cam}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
                 cv2.putText(active, f"height_fraction={height_fraction:.2f} target={TARGET_HEIGHT:.2f} lin={lin_cmd:.2f} ang={ang_cmd:.2f}",
