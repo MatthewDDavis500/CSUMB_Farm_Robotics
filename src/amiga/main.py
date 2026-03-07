@@ -252,7 +252,7 @@ async def follow():
 
             # Choose the best/closest target across cameras
             best_cam = None
-            best_height = -1.0  # The y-values are -1 to 0. height = -1 is the bottom of the frame and height = 0 is the top of the frame
+            best_height = -1.0  # Height fractions are always 0 to 1, so initializing to -1 ensures that any height is chosen over this initial value
 
             for cam_name, cam_state in states.items():
                 # Show camera feed
