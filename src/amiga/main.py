@@ -225,12 +225,6 @@ async def follow():
             states[cam_name]["score"] = best_score
             states[cam_name]["timestamp"] = time.time()
 
-            # show each camera stream
-            cv2.imshow(cam_name, frame)
-            if (cv2.waitKey(1) & 0xFF) == ord("q"):
-                # user quits: just return and let main exit
-                return
-
     async def control_loop():
         '''
             Asynchronous function for controlling the robot's movement.
@@ -261,6 +255,9 @@ async def follow():
             best_height = -1.0  # The y-values are -1 to 0. height = -1 is the bottom of the frame and height = 0 is the top of the frame
 
             for cam_name, cam_state in states.items():
+                # Show camera feed
+                cv2.imshow(cam_name, cam_state['frame'])
+                
                 # Find how long ago the last state update was
                 age = now - cam_state["timestamp"]
                 
