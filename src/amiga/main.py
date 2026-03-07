@@ -73,9 +73,11 @@ async def follow():
     canbus_client = EventClient(canbus_config)
     oak_client = EventClient(oak_config)
 
+    # Ensure there is at least two subscriptions, as each oak camera needs a subscription
     if len(oak_config.subscriptions) < 2:
-        raise ValueError("camera config must contain 2 subscriptions (oak0 + oak1)")
+        raise ValueError("Oak config must contain at least 2 subscriptions (oak0 and oak1)!")
 
+    # Load the YOLO model
     model = YOLO(MODEL_NAME)
 
     # Per-camera latest state
@@ -83,7 +85,7 @@ async def follow():
         'oak0': {
             "frame": None,            # Image from the Oak camera to be altered and displayed by OpenCV
             "target_center_x": None,  # Target person's horizontal center, smoothed to avoid motor jittering
-            "box": None,              # Bounding box dimentions in full-res: (x1,y1,x2,y2)
+            "box": None,              # Bounding box dimentions in full-res: (x1, y1, x2, y2)
             "height_fraction": None,  # Bounding box height fraction of frame
             "score": None,            # Model confidence in person detection
             "timestamp": 0.0,         # Timestamp of current state
@@ -99,24 +101,40 @@ async def follow():
     }
 
     async def camera_worker(sub, cam_name):
+        '''
+        Asynchronous function for detecting people in the frame of a camera.
+
+        Used here to determine how close a person is to the robot if there is a person in frame of one of the cameras.
+        This data will be used to decide how much forward/backward the robot should move, if at all.
+        
+        Args:
+            sub: The subscription of the camera to detect people in.
+            cam_name: The name of the camera (ex. "oak0").
+        
+        Results:
+            Updates the state entry corresponding to the camera name in the "states" dictionary
+        '''
         cv2.namedWindow(cam_name, cv2.WINDOW_NORMAL)
 
+        # Asynchronously monitor the oak camera for people, using the YOLO model
         async for event, msg in oak_client.subscribe(sub, decode=True):
+            # Decode the frame into a readable format, immediately skipping if the frame doesn't exist
             frame = cv2.imdecode(np.frombuffer(msg.image_data, dtype=np.uint8), cv2.IMREAD_COLOR)
             if frame is None:
                 continue
 
-            h, w = frame.shape[:2]
+            
+            frame_height, frame_width = frame.shape[:2]
 
-            # Optional downscale to speed up YOLO
+            # Downscale the frame to speed up YOLO model (lower size = faster analysis)
             if FRAME_SCALING != 1.0:
-                small = cv2.resize(frame, None, fx=FRAME_SCALING, fy=FRAME_SCALING)
+                yolo_frame = cv2.resize(frame, None, fx=FRAME_SCALING, fy=FRAME_SCALING)
             else:
-                small = frame
+                yolo_frame = frame
 
-            # Detect people only (COCO class 0)
+            # Set up the YOLO model with our constant parameters (COCO class 0 only detects people)
             results = model.predict(
-                source=small,
+                source=yolo_frame,
                 conf=CONFIDENCE_THRESHOLD,
                 iou=IOU,
                 classes=[0],
@@ -146,16 +164,16 @@ async def follow():
                         x1 /= FRAME_SCALING; y1 /= FRAME_SCALING
                         x2 /= FRAME_SCALING; y2 /= FRAME_SCALING
 
-                    x1 = int(clamp(x1, 0, w - 1))
-                    y1 = int(clamp(y1, 0, h - 1))
-                    x2 = int(clamp(x2, 0, w - 1))
-                    y2 = int(clamp(y2, 0, h - 1))
+                    x1 = int(clamp(x1, 0, frame_width - 1))
+                    y1 = int(clamp(y1, 0, frame_height - 1))
+                    x2 = int(clamp(x2, 0, frame_width - 1))
+                    y2 = int(clamp(y2, 0, frame_height - 1))
 
                     best_box = (x1, y1, x2, y2)
                     cx = (x1 + x2) // 2
 
                     box_h = max(1, (y2 - y1))
-                    height_fraction = box_h / float(h)
+                    height_fraction = box_h / float(frame_height)
 
                     # Draw bbox
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
