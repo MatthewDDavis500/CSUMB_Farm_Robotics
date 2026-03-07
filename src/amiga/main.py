@@ -381,20 +381,14 @@ async def follow():
 
             await asyncio.sleep(0.001)
 
-    # Run camera workers (2 cameras) + control loop
+    # Run camera workers and control loop
     cam_tasks = []
-    name = ''
     for sub in oak_config.subscriptions:
         # Determine camera name
         if 'oak0' in sub['uri']['query']:
-            name = 'oak0'
+            cam_tasks.append(asyncio.create_task(camera_worker(sub, 'oak0')))
         elif 'oak1' in sub['uri']['query']:
-            name = 'oak1'
-        else:
-            name = 'camera'
-            
-        # Add asynchronous task to task list
-        cam_tasks.append(asyncio.create_task(camera_worker(sub, name)))
+            cam_tasks.append(asyncio.create_task(camera_worker(sub, 'oak1')))
         
     try:
         await control_loop()
