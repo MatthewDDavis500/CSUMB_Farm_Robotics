@@ -12,8 +12,33 @@ from farm_ng.core.event_service_pb2 import EventServiceConfig
 from farm_ng.core.events_file_reader import proto_from_json_file
 from farm_ng.canbus.canbus_pb2 import Twist2d
 
+### Config File Paths ###
 OAK_CONFIG = 'oak_config.json'
 CANBUS_CONFIG = 'canbus_config.json'
+
+### Model Parameters ###
+MODEL_NAME = 'yolov8n.pt'    # (String) YOLO file to load
+CONFIDENCE_THRESHOLD = 0.65  # (0-1 Scale) How confident does the model need to be to consider an object a person?
+IOU = 0.5                    # (0-1 Scale) Intersection over union. How much do two bounding boxes need to overlap for the model to consider them the same object and only take the one with the heighest confindence?
+FRAME_SCALING = 0.6          # (Proportional Multiplier) Ratio by which to scale the camera frames before passing to model. Smaller numbers means smaller image size, which means faster computation but less accuracy
+EMA_ALPHA = 0.85             # (0-1 Scale) Smoothness of reaction. Higher values means more memory (previous frames) is considered, so smoother but slower reactions. Lower values mean more new frames are considered, resulting in faster but possibly chattery responses
+
+### Distance Control Parameters ###
+TARGET_HEIGHT = 0.8         # (Fraction) What fraction of the frame vertically should the detected person be ideally filling? Higher values means closer following
+HEIGHT_DEADZONE = 0.05      # (Fraction) Deadzone for distance control. Having a detected person filling this much more or less than the TARGET_HEIGHT will be acceptable
+KP_LINEAR = 0.8             # (Gain) Proportion for how fast the robot will move forward or backward based on the current error
+MAX_FORWARD = 0.25          # (Meters/Second) Maximum forward velocity
+MAX_REVERSE = 0.18          # (Meters/Second) Maximum reverse velocity
+
+### Heading Control Parameters ###
+FLIP_STEER = True           # (Boolean) If True, inverts steering
+KP_ANGULAR = 1.2            # (Gain) Proportion for how fast the robot will turn based on the current error
+MAX_ANGULAR = 0.5           # (Radians/Second) Maximum angular velocity
+ANGULAR_DEADZONE = 0.1      # (Fraction) Deadzone for turning. Having a detected person within this much of the center will be acceptable
+
+### Safety/Performance ###
+LOST_TIMEOUT = 0.8          # (Seconds) How long the robot will continue movement before stopping completely if it doesn't detect anyone
+SEND_HZ = 20.0              # (Hertz: X/Second) How many times per second twist commands will be sent to the motors
 
 
 def clamp(value: float, min: float, max: float) -> float:
@@ -39,8 +64,6 @@ def clamp(value: float, min: float, max: float) -> float:
 
 
 async def follow(
-    canbus_cfg_path: Path,
-    camera_cfg_path: Path,
     *,
     model_name: str,
     conf: float,
@@ -62,8 +85,8 @@ async def follow(
     lost_timeout_s: float,
     send_hz: float,
 ):
-    canbus_cfg: EventServiceConfig = proto_from_json_file(canbus_cfg_path, EventServiceConfig())
-    cam_cfg: EventServiceConfig = proto_from_json_file(camera_cfg_path, EventServiceConfig())
+    canbus_cfg: EventServiceConfig = proto_from_json_file(CANBUS_CONFIG, EventServiceConfig())
+    cam_cfg: EventServiceConfig = proto_from_json_file(OAK_CONFIG, EventServiceConfig())
 
     canbus_client = EventClient(canbus_cfg)
     cam_client = EventClient(cam_cfg)
@@ -330,8 +353,6 @@ if __name__ == "__main__":
 
     asyncio.run(
         follow(
-            'canbus_config.json',
-            'oak_config.json',
             model_name=args.model,
             conf=args.conf,
             iou=args.iou,
