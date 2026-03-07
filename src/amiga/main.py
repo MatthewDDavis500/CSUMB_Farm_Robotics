@@ -149,7 +149,7 @@ async def follow():
 
             best_box = None
             best_score = None
-            cx = None
+            center_x = None
             height_fraction = None
 
             # If the model returns results for any frames, look at the first (and only) frame
@@ -181,16 +181,17 @@ async def follow():
                     x2 = int(clamp(x2, 0, frame_width - 1))
                     y2 = int(clamp(y2, 0, frame_height - 1))
 
-
+                    # Store the best bounding box and center x-value
                     best_box = (x1, y1, x2, y2)
-                    cx = (x1 + x2) // 2
+                    center_x = (x1 + x2) // 2
 
-                    box_h = max(1, (y2 - y1))
-                    height_fraction = box_h / float(frame_height)
+                    # Find the fraction of the frame's height that the bounding box takes up (used to find how close it is)
+                    box_height = max(1, (y2 - y1))  # Value will always be at least 1 so that fraction is never 0
+                    height_fraction = box_height / float(frame_height)
 
-                    # Draw bbox
+                    # Draw bounding box on the frame for visualization
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.circle(frame, (cx, (y1 + y2) // 2), 6, (0, 0, 255), -1)
+                    cv2.circle(frame, (center_x, (y1 + y2) // 2), 6, (0, 0, 255), -1)
                     cv2.putText(
                         frame,
                         f"{cam_name} conf={best_score:.2f} h={height_fraction:.2f}",
@@ -201,14 +202,16 @@ async def follow():
                         2,
                     )
 
-            # EMA smoothing for cx
+            # EMA smoothing for center x-value
             target_center_x = states[cam_name]["target_center_x"]
-            if cx is not None:
+            if center_x is not None:
                 if target_center_x is None:
-                    target_center_x = float(cx)
+                    target_center_x = float(center_x)
                 else:
-                    target_center_x = (EMA_ALPHA * target_center_x) + ((1.0 - EMA_ALPHA) * float(cx))
+                    # Smooth out turning by choosing a point between the current point and the actual center of the bounding box to turn to
+                    target_center_x = (EMA_ALPHA * target_center_x) + ((1.0 - EMA_ALPHA) * float(center_x))
 
+            # Update state
             states[cam_name]["frame"] = frame
             states[cam_name]["target_center_x"] = target_center_x
             states[cam_name]["box"] = best_box
@@ -342,6 +345,3 @@ if __name__ == "__main__":
     asyncio.run(
         follow()
     )
-
-## Alex's Hotspot Amiga IP: 10.179.67.170
-## Matthew's Hotspot Amiga IP: 172.20.10.4
