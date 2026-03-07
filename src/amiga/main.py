@@ -129,8 +129,6 @@ async def follow():
         Results:
             Updates the state entry corresponding to the camera name in the "states" dictionary
         '''
-        cv2.namedWindow(cam_name, cv2.WINDOW_NORMAL)
-
         # Asynchronously monitor the oak camera for people, using the YOLO model
         async for event, msg in oak_client.subscribe(sub, decode=True):
             # Decode the frame into a readable format, immediately skipping if the frame doesn't exist
@@ -138,7 +136,6 @@ async def follow():
             if frame is None:
                 continue
 
-            
             frame_height, frame_width = frame.shape[:2]
 
             # Downscale the frame to speed up YOLO model (lower size = faster analysis)
@@ -149,12 +146,14 @@ async def follow():
 
             # Run the YOLO model with our constant parameters, using the asynch lock to ensure only this worker can use the model right now
             async with inference_lock:
-                results = model.predict(
-                    source=yolo_frame,          # Load our camera frame into the model
-                    conf=CONFIDENCE_THRESHOLD,
-                    iou=IOU,
-                    classes=[0],                # Only detect people
-                    verbose=False,              # Do not output detection logs to terminal
+                results = asyncio.to_thread(
+                    model.predict(
+                        source=yolo_frame,          # Load our camera frame into the model
+                        conf=CONFIDENCE_THRESHOLD,
+                        iou=IOU,
+                        classes=[0],                # Only detect people
+                        verbose=False,              # Do not output detection logs to terminal
+                    )
                 )
 
             best_box = None
@@ -248,7 +247,9 @@ async def follow():
         last_detection_time = None
         stop_factor = 0
 
-        # Create a unique window for the camera feed with the closest detected person
+        # Create windows for camera feeds
+        cv2.namedWindow('oak0', cv2.WINDOW_NORMAL)
+        cv2.namedWindow('oak1', cv2.WINDOW_NORMAL)
         cv2.namedWindow("ACTIVE_TARGET", cv2.WINDOW_NORMAL)
 
         while True:
