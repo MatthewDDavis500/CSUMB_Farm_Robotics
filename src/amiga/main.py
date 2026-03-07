@@ -70,7 +70,7 @@ def clamp(value: float, min_val: float, max_val: float) -> float:
     temp = min(max_val, value)  # Constrain using the max value
     return float(max(min_val, temp)) # Constrain using the min value
 
-async def follow():
+async def follow(ip: str):
     '''
         Asynchronous function for following a person with the robot.
         
@@ -84,6 +84,10 @@ async def follow():
     # Import configuration from JSON config files
     canbus_config: EventServiceConfig = proto_from_json_file(CANBUS_CONFIG, EventServiceConfig())
     oak_config: EventServiceConfig = proto_from_json_file(OAK_CONFIG, EventServiceConfig())
+    
+    # Load user-provided IP into config
+    canbus_config.host = ip
+    oak_config.host = ip
 
     # Create clients for the canbus and oak cameras
     canbus_client = EventClient(canbus_config)
@@ -387,9 +391,9 @@ async def follow():
     cam_tasks = []
     for sub in oak_config.subscriptions:
         # Determine camera name
-        if 'oak0' in sub['uri']['query']:
+        if 'oak0' in sub.uri.query:
             cam_tasks.append(asyncio.create_task(camera_worker(sub, 'oak0')))
-        elif 'oak1' in sub['uri']['query']:
+        elif 'oak1' in sub.uri.query:
             cam_tasks.append(asyncio.create_task(camera_worker(sub, 'oak1')))
         
     try:
@@ -400,6 +404,10 @@ async def follow():
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ip", type=str, required=True)
+    args = ap.parse_args()
+    
     asyncio.run(
-        follow()
+        follow(args.ip)
     )
