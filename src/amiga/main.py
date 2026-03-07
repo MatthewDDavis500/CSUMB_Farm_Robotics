@@ -89,10 +89,6 @@ async def follow():
     canbus_client = EventClient(canbus_config)
     oak_client = EventClient(oak_config)
 
-    # Ensure there is at least two subscriptions, as each oak camera needs a subscription
-    if len(oak_config.subscriptions) < 2:
-        raise ValueError("Oak config must contain at least 2 subscriptions (oak0 and oak1)!")
-
     # Load the YOLO model
     model = YOLO(MODEL_NAME)
 
@@ -246,6 +242,13 @@ async def follow():
         '''
         period = 1.0 / SEND_HZ  # How many seconds between each motor twist message send
         last_sent = 0.0
+        
+        # These will be used to implement a slow stop when someone goes out of frame
+        last_valid_twist = Twist2d()
+        last_valid_twist.linear_velocity_x = 0.0
+        last_valid_twist.angular_velocity = 0.0
+        last_detection_time = None
+        stop_factor = 0
 
         # Create a unique window for the camera feed with the closest detected person
         cv2.namedWindow("ACTIVE_TARGET", cv2.WINDOW_NORMAL)
@@ -326,6 +329,11 @@ async def follow():
                 # Store the linear and angluar velocities in the twist command
                 twist.linear_velocity_x = float(linear_command)
                 twist.angular_velocity = float(angular_command)
+                
+                # Update last valid twist
+                last_valid_twist.linear_velocity_x = float(linear_command)
+                last_valid_twist.angular_velocity = float(angular_command)
+                last_detection_time = now
 
                 # Display the active camera feed and twist details
                 active = frame.copy()
@@ -338,7 +346,24 @@ async def follow():
                             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 cv2.imshow("ACTIVE_TARGET", active)
             else:
-                # Stop if there is no detected target
+                # Calculate exactly how long the target has been lost
+                if(last_detection_time is not None):
+                    time_since_lost = now - last_detection_time
+                else:
+                    time_since_lost = 99999.0
+                # Slow stop when target lost
+                if(time_since_lost < LOST_TIMEOUT):
+                    # If still in timeout duration, gradually decrease speed based on how close to the end of timeout duration
+                    stop_factor = 1.0 - (time_since_lost / LOST_TIMEOUT)
+                    twist.linear_velocity_x = last_valid_twist.linear_velocity_x * stop_factor
+                    twist.angular_velocity = last_valid_twist.angular_velocity * stop_factor
+                else:
+                    # If timeout duration reached, stop robot completely and reset last valid twist
+                    twist.linear_velocity_x = 0.0
+                    twist.angular_velocity = 0.0
+                    last_valid_twist = Twist2d()
+            
+                # No target, so display empty target window
                 blank = np.zeros((240, 640, 3), dtype=np.uint8)
                 cv2.putText(blank, "NO TARGET (stopping)", (20, 120),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
