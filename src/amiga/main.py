@@ -49,7 +49,7 @@ LOST_TIMEOUT = 0.8           # (Seconds) How long the robot will continue moveme
 SEND_HZ = 20.0               # (Hertz: X/Second) How many times per second twist commands will be sent to the motors
 
 
-def clamp(value: float, min: float, max: float) -> float:
+def clamp(value: float, min_val: float, max_val: float) -> float:
     '''
     Constrains a float value to be within a defined minimum and maximum range.
     
@@ -67,8 +67,8 @@ def clamp(value: float, min: float, max: float) -> float:
             If value is above max, returns max.
             If value is below min, returns min.
     '''
-    temp = min(max, value)  # Constrain using the max value
-    return float(max(min, temp)) # Constrain using the min value
+    temp = min(max_val, value)  # Constrain using the max value
+    return float(max(min_val, temp)) # Constrain using the min value
 
 async def follow():
     '''
