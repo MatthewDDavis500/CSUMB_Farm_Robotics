@@ -146,14 +146,13 @@ async def follow():
 
             # Run the YOLO model with our constant parameters, using the asynch lock to ensure only this worker can use the model right now
             async with inference_lock:
-                results = asyncio.to_thread(
-                    model.predict(
-                        source=yolo_frame,          # Load our camera frame into the model
-                        conf=CONFIDENCE_THRESHOLD,
-                        iou=IOU,
-                        classes=[0],                # Only detect people
-                        verbose=False,              # Do not output detection logs to terminal
-                    )
+                results = await asyncio.to_thread(
+                    model.predict,
+                    source=yolo_frame,          # Load our camera frame into the model
+                    conf=CONFIDENCE_THRESHOLD,
+                    iou=IOU,
+                    classes=[0],                # Only detect people
+                    verbose=False,              # Do not output detection logs to terminal
                 )
 
             best_box = None
