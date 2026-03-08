@@ -12,7 +12,7 @@ from farm_ng.core.event_service_pb2 import EventServiceConfig
 from farm_ng.core.events_file_reader import proto_from_json_file
 from farm_ng.canbus.canbus_pb2 import Twist2d
 
-from farm_ng.oak import oak_pb2
+from farm_ng.oak import oak_pb2  # kept (even though calibration currently fails)
 from google.protobuf.empty_pb2 import Empty
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -71,9 +71,9 @@ def median_depth_from_disparity(
 
     disp: decoded disparity image (often uint16)
     box: (x1,y1,x2,y2) in same pixel space as disp (we run YOLO on /left for this reason)
-    f_px: focal length in pixels (from /calibration)
-    baseline_m: stereo baseline in meters
-    disp_scale: how disparity is scaled in the image (common: 16.0). If your Z is ~16x off, change this.
+    f_px: focal length in pixels (from /calibration or fallback)
+    baseline_m: stereo baseline in meters (guess/tunable)
+    disp_scale: how disparity is scaled in the image (your system: 1.0 is closer)
     """
     if disp is None or box is None:
         return None
@@ -117,9 +117,9 @@ def median_depth_from_disparity(
 
     d = roi / float(disp_scale)
 
-    # Filter invalid
+    # Filter invalid / unstable values (tighter than before for close-range stability)
     d = d[np.isfinite(d)]
-    d = d[d > 0.5]  # discard near-zero disparity
+    d = d[(d > 4.0) & (d < 500.0)]
     if d.size < 100:
         return None
 
@@ -135,7 +135,7 @@ def median_depth_from_disparity(
     return z
 
 
-async def follow(ip: str, baseline_m: float, disp_scale: float, target_z_m: float):
+async def follow(ip: str, baseline_m: float, disp_scale: float, target_z_m: float, z_scale: float):
     # Import configuration from JSON config files
     canbus_config: EventServiceConfig = proto_from_json_file(CANBUS_CONFIG, EventServiceConfig())
     oak_config: EventServiceConfig = proto_from_json_file(OAK_CONFIG, EventServiceConfig())
@@ -148,22 +148,34 @@ async def follow(ip: str, baseline_m: float, disp_scale: float, target_z_m: floa
     canbus_client = EventClient(canbus_config)
     oak_client = EventClient(oak_config)
 
-    # Request calibration ONCE and extract focal length (pixels)
-    # OakCalibration contains camera_data[] with intrinsic_matrix flattened 3x3.
-    # fx is intrinsic_matrix[0].
+    # -------------------------------------------------------------------------
+    # CALIBRATION (optional): currently failing in your environment, so we fall back
+    # -------------------------------------------------------------------------
+    F_PX = None
+
+    async def try_get_calibration(service_name: str):
+        path = f"/calibration?service_name={service_name}"
+        return await oak_client.request_reply(path, Empty(), decode=True)
+
     try:
-        calibration: oak_pb2.OakCalibration = await oak_client.request_reply("/calibration", Empty(), decode=True)
+        calibration = await try_get_calibration("oak0")
         if len(calibration.camera_data) == 0:
             raise RuntimeError("OakCalibration.camera_data is empty")
-        fx = float(calibration.camera_data[0].intrinsic_matrix[0])
-        if fx <= 0:
-            raise RuntimeError("Calibration fx <= 0")
-        F_PX = fx
-        print(f"[CALIB] fx={F_PX:.2f}px (from /calibration), baseline={baseline_m:.3f}m, disp_scale={disp_scale}")
-    except Exception as e:
-        # Fallback so the script still runs, but Z will be wrong until calibration works
-        F_PX = 400.0
-        print(f"[WARN] Failed to read /calibration ({e}). Using fallback fx={F_PX:.2f}px.")
+        F_PX = float(calibration.camera_data[0].intrinsic_matrix[0])
+        print(f"[CALIB] fx={F_PX:.2f}px (oak0) baseline={baseline_m:.3f}m disp_scale={disp_scale:.2f} z_scale={z_scale:.3f}")
+    except Exception as e0:
+        print(f"[WARN] /calibration?service_name=oak0 failed: {e0}")
+        try:
+            calibration = await try_get_calibration("oak1")
+            if len(calibration.camera_data) == 0:
+                raise RuntimeError("OakCalibration.camera_data is empty")
+            F_PX = float(calibration.camera_data[0].intrinsic_matrix[0])
+            print(f"[CALIB] fx={F_PX:.2f}px (oak1) baseline={baseline_m:.3f}m disp_scale={disp_scale:.2f} z_scale={z_scale:.3f}")
+        except Exception as e1:
+            print(f"[WARN] /calibration?service_name=oak1 failed: {e1}")
+            F_PX = 400.0
+            print(f"[WARN] Using fallback fx={F_PX:.2f}px (use --z-scale to calibrate). baseline={baseline_m:.3f}m disp_scale={disp_scale:.2f} z_scale={z_scale:.3f}")
+    # -------------------------------------------------------------------------
 
     # Apply target distance
     global TARGET_Z_M
@@ -184,7 +196,7 @@ async def follow(ip: str, baseline_m: float, disp_scale: float, target_z_m: floa
 
             "disp": None,               # disparity frame (unchanged)
             "disp_timestamp": 0.0,
-            "z_m": None,                # estimated distance in meters
+            "z_m": None,                # estimated distance in meters (after z_scale)
         },
         "oak1": {
             "frame": None,
@@ -211,6 +223,8 @@ async def follow(ip: str, baseline_m: float, disp_scale: float, target_z_m: floa
                 disp = cv2.imdecode(np.frombuffer(msg.image_data, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
                 if disp is None:
                     continue
+                if disp.ndim == 3:
+                    disp = disp[..., 0]
                 states[cam_name]["disp"] = disp
                 states[cam_name]["disp_timestamp"] = now
                 continue
@@ -249,7 +263,7 @@ async def follow(ip: str, baseline_m: float, disp_scale: float, target_z_m: floa
                     boxes_xyxy = result.boxes.xyxy.cpu().numpy()
                     scores = result.boxes.conf.cpu().numpy()
 
-                    # Choose largest area as "closest" within a camera
+                    # Choose largest area as "closest" within a camera (good heuristic)
                     areas = (boxes_xyxy[:, X2] - boxes_xyxy[:, X1]) * (boxes_xyxy[:, Y2] - boxes_xyxy[:, Y1])
                     largest_area_id = int(np.argmax(areas))
 
@@ -275,13 +289,15 @@ async def follow(ip: str, baseline_m: float, disp_scale: float, target_z_m: floa
                     # Compute depth from latest disparity (if available)
                     disp = states[cam_name].get("disp", None)
                     if disp is not None:
-                        z_m = median_depth_from_disparity(
+                        z_raw = median_depth_from_disparity(
                             disp=disp,
                             box=best_box,
                             f_px=F_PX,
                             baseline_m=baseline_m,
                             disp_scale=disp_scale,
                         )
+                        if z_raw is not None:
+                            z_m = float(z_raw) * float(z_scale)
 
                     # Draw bbox + center
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -362,7 +378,6 @@ async def follow(ip: str, baseline_m: float, disp_scale: float, target_z_m: floa
                 cam_state = states[best_cam]
                 frame = cam_state["frame"]
                 target_center_x = cam_state["target_center_x"]
-                box = cam_state["box"]
                 z_m = cam_state["z_m"]
                 score = cam_state["score"]
 
@@ -378,7 +393,7 @@ async def follow(ip: str, baseline_m: float, disp_scale: float, target_z_m: floa
                     linear_command = KP_LINEAR_Z * z_error
                     linear_command = clamp(linear_command, -MAX_REVERSE, MAX_FORWARD)
 
-                # Heading control (same as before)
+                # Heading control
                 angular_error = float(target_center_x - center)
                 if FLIP_STEER:
                     angular_error = -angular_error
@@ -408,7 +423,7 @@ async def follow(ip: str, baseline_m: float, disp_scale: float, target_z_m: floa
                 cv2.putText(active, f"conf={0.0 if score is None else score:.2f} flip_steer={FLIP_STEER}",
                             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-                cv2.putText(active, f"baseline={baseline_m:.3f}m disp_scale={disp_scale:.1f}",
+                cv2.putText(active, f"disp_scale={disp_scale:.2f} z_scale={z_scale:.3f}",
                             (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
                 cv2.imshow("ACTIVE_TARGET", active)
@@ -475,9 +490,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--ip", type=str, required=True)
 
-    # Calibration / depth tuning
+    # Depth tuning
     ap.add_argument("--baseline-m", type=float, default=0.075, help="Stereo baseline in meters (default 0.075)")
-    ap.add_argument("--disp-scale", type=float, default=16.0, help="Disparity scale factor (default 16.0)")
+    ap.add_argument("--disp-scale", type=float, default=1.0, help="Disparity scale factor (default 1.0)")
+    ap.add_argument("--z-scale", type=float, default=1.0, help="Multiply computed z by this factor to calibrate")
     ap.add_argument("--target-z", type=float, default=1.5, help="Follow distance in meters (default 1.5)")
 
     args = ap.parse_args()
@@ -488,5 +504,6 @@ if __name__ == "__main__":
             baseline_m=args.baseline_m,
             disp_scale=args.disp_scale,
             target_z_m=args.target_z,
+            z_scale=args.z_scale,
         )
     )
