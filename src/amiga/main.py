@@ -32,11 +32,11 @@ X2 = 2
 Y2 = 3
 
 ### Distance Control Parameters ###
-TARGET_HEIGHT = 0.8          # (Fraction) What fraction of the frame vertically should the detected person be ideally filling? Higher values means closer following
+TARGET_HEIGHT = 1.0          # (Fraction) What fraction of the frame vertically should the detected person be ideally filling? Higher values means closer following
 HEIGHT_DEADZONE = 0.05       # (Fraction) Deadzone for distance control. Having a detected person filling this much more or less than the TARGET_HEIGHT will be acceptable
 KP_LINEAR = 0.8              # (Gain) Proportion for how fast the robot will move forward or backward based on the current error
-MAX_FORWARD = 0.25           # (Meters/Second) Maximum forward velocity
-MAX_REVERSE = 0.18           # (Meters/Second) Maximum reverse velocity
+MAX_FORWARD = 0.4           # (Meters/Second) Maximum forward velocity
+MAX_REVERSE = 0.3           # (Meters/Second) Maximum reverse velocity
 
 ### Heading Control Parameters ###
 FLIP_STEER = True            # (Boolean) If True, inverts steering
@@ -334,11 +334,11 @@ async def follow(ip: str):
 
                 # Store the linear and angluar velocities in the twist command
                 twist.linear_velocity_x = float(linear_command)
-                twist.angular_velocity = float(angular_command)
+                # twist.angular_velocity = float(angular_command)
                 
                 # Update last valid twist
                 last_valid_twist.linear_velocity_x = float(linear_command)
-                last_valid_twist.angular_velocity = float(angular_command)
+                # last_valid_twist.angular_velocity = float(angular_command)
                 last_detection_time = now
 
                 # Display the active camera feed and twist details
@@ -362,7 +362,7 @@ async def follow(ip: str):
                     # If still in timeout duration, gradually decrease speed based on how close to the end of timeout duration
                     stop_factor = 1.0 - (time_since_lost / LOST_TIMEOUT)
                     twist.linear_velocity_x = last_valid_twist.linear_velocity_x * stop_factor
-                    twist.angular_velocity = last_valid_twist.angular_velocity * stop_factor
+                    # twist.angular_velocity = last_valid_twist.angular_velocity * stop_factor
                 else:
                     # If timeout duration reached, stop robot completely and reset last valid twist
                     twist.linear_velocity_x = 0.0
