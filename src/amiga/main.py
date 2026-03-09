@@ -3,14 +3,17 @@ import asyncio
 import time
 from pathlib import Path
 
-import cv2  
-import numpy as np  
-from ultralytics import YOLO  
+import cv2
+import numpy as np
+from ultralytics import YOLO
 
-from farm_ng.core.event_client import EventClient  
-from farm_ng.core.event_service_pb2 import EventServiceConfig  
-from farm_ng.core.events_file_reader import proto_from_json_file 
-from farm_ng.canbus.canbus_pb2 import Twist2d  
+from farm_ng.core.event_client import EventClient
+from farm_ng.core.event_service_pb2 import EventServiceConfig
+from farm_ng.core.events_file_reader import proto_from_json_file
+from farm_ng.canbus.canbus_pb2 import Twist2d
+
+from farm_ng.oak import oak_pb2
+from google.protobuf.empty_pb2 import Empty
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -25,18 +28,17 @@ IOU = 0.5                    # (0-1 Scale) Intersection over union. How much do 
 FRAME_SCALING = 0.6          # (Proportional Multiplier) Ratio by which to scale the camera frames before passing to model. Smaller numbers means smaller image size, which means faster computation but less accuracy
 EMA_ALPHA = 0.85             # (0-1 Scale) Smoothness of reaction. Higher values means more memory (previous frames) is considered, so smoother but slower reactions. Lower values mean more new frames are considered, resulting in faster but possibly chattery responses
 
-### Detection Box Vertex Indicies ###
-X1 = 0
-Y1 = 1
-X2 = 2
-Y2 = 3
+### Detection Box Vertex Indices ###
+X1, Y1, X2, Y2 = 0, 1, 2, 3
 
 ### Distance Control Parameters ###
-TARGET_HEIGHT = 1.0          # (Fraction) What fraction of the frame vertically should the detected person be ideally filling? Higher values means closer following
-HEIGHT_DEADZONE = 0.05       # (Fraction) Deadzone for distance control. Having a detected person filling this much more or less than the TARGET_HEIGHT will be acceptable
-KP_LINEAR = 0.8              # (Gain) Proportion for how fast the robot will move forward or backward based on the current error
-MAX_FORWARD = 0.4           # (Meters/Second) Maximum forward velocity
-MAX_REVERSE = 0.3           # (Meters/Second) Maximum reverse velocity
+TARGET_DEPTH = 1.5           # (Meters) Target distance from which to follow a person 
+DEPTH_DEADZONE = 0.15        # (Meters) Deadzone for following. Having a detected person within this much of the target depth will be acceptable
+CAMERA_BASELINE = 0.075      # (Meters) Distance between the centers of both camera lenses used by OAK-Ds for depth. Used for triangulation calculations
+DISPARITY_SCALE = 16         # 
+KP_LINEAR = 0.7              # (Gain) Proportion for how fast the robot will move forward or backward based on the current error
+MAX_FORWARD = 0.4            # (Meters/Second) Maximum forward velocity
+MAX_REVERSE = 0.3            # (Meters/Second) Maximum reverse velocity
 
 ### Heading Control Parameters ###
 FLIP_STEER = True            # (Boolean) If True, inverts steering
@@ -48,27 +50,93 @@ ANGULAR_DEADZONE = 0.1       # (Fraction) Deadzone for turning. Having a detecte
 LOST_TIMEOUT = 0.8           # (Seconds) How long the robot will continue movement before stopping completely if it doesn't detect anyone
 SEND_HZ = 20.0               # (Hertz: X/Second) How many times per second twist commands will be sent to the motors
 
-
 def clamp(value: float, min_val: float, max_val: float) -> float:
     '''
-    Constrains a float value to be within a defined minimum and maximum range.
-    
-    Used here to saturate control signals (like speed and steering) so they 
-    do not exceed the physical or safety limits of the robot.
-    
-    Args:
-        value: The input value to be constrained.
-        min: The lower bound (minimum allowed value).
-        max: The upper bound (maximum allowed value).
+        Constrains a float value to be within a defined minimum and maximum range.
         
-    Returns:
-        The constrained float value:
-            If value is within limits, returns value.
-            If value is above max, returns max.
-            If value is below min, returns min.
+        Used here to saturate control signals (like speed and steering) so they 
+        do not exceed the physical or safety limits of the robot.
+        
+        Args:
+            value: The input value to be constrained.
+            min: The lower bound (minimum allowed value).
+            max: The upper bound (maximum allowed value).
+            
+        Returns:
+            The constrained float value:
+                If value is within limits, returns value.
+                If value is above max, returns max.
+                If value is below min, returns min.
     '''
-    temp = min(max_val, value)  # Constrain using the max value
-    return float(max(min_val, temp)) # Constrain using the min value
+    return float(max(min_val, min(max_val, value)))
+
+def visualize_depth(raw_disparity):
+    '''Colorizes disparity for debugging.'''
+    if raw_disparity is None: 
+        return None
+    
+    # Normalize disparity to 0-255 (grayscale)
+    disparity_visualization = (raw_disparity / DISPARITY_SCALE).astype(np.uint8)
+    return cv2.applyColorMap(disparity_visualization, cv2.COLORMAP_JET)
+
+def median_depth_from_disparity(disparity, box, focal_length):
+    '''
+        Finds the median depth of an area of a box in a disparity frame.
+        
+        Used here to determine how far a detected person is from the camera for accurate following from a distance.
+        
+        Args:
+            disparity: A frame from the OAK-D's disparity stream.
+            box: The bounding box of the detected person.
+            focal_length: Feature of the camera that determines FOV, important for translating meters into pixels.
+            
+        Returns:
+            The depth of the detected person in the frame (how far they are) in meters.
+    '''
+    # If any critical inputs are missing, return None
+    if disparity is None or box is None or focal_length <= 0: 
+        return None
+    
+    # Get box vertices, width, and height
+    x1, y1, x2, y2 = box
+    box_width = max(1, x2 - x1)
+    box_height = max(1, y2 - y1)
+    
+    # Get disparity frame's dimensions
+    HEIGHT, WIDTH = disparity.shape[:2]
+
+    # Calculate Region Of Interest (ROI) (Center 30% of the bounding box) to avoid getting depth of stuff behind the detected person
+    rx1 = int(clamp(x1 + 0.3*box_width, 0, WIDTH-1))
+    rx2 = int(clamp(x2 - 0.3*box_width, 0, WIDTH))
+    ry1 = int(clamp(y1 + 0.3*box_height, 0, HEIGHT-1))
+    ry2 = int(clamp(y2 - 0.1*box_height, 0, HEIGHT))
+
+    # If vertices of ROI box are invalid, return None
+    if rx2 <= rx1 or ry2 <= ry1: 
+        return None
+
+    region_of_interest = disparity[ry1:ry2, rx1:rx2].astype(np.float32)
+    real_disparity = region_of_interest / float(DISPARITY_SCALE)  # Use the disparity scale to get the actual disparity
+    real_disparity = real_disparity[np.isfinite(real_disparity)]  # Only get disparity that isn't infinite or NaN
+    real_disparity = real_disparity[real_disparity > 0.5]  # Filter noise
+    
+    # Require minimum valid pixels
+    if real_disparity.size < 50: 
+        return None 
+
+    # Find the median disparity
+    real_disparity_median = np.median(real_disparity)
+    if real_disparity_median <= 0: 
+        return None
+    
+    # Calculate the depth of the detected person
+    depth = (focal_length * CAMERA_BASELINE) / real_disparity_median
+    
+    # Return None if depth isn't in the range of valid values
+    if 0.3 < depth < 15.0:
+        return depth  
+    else:
+        return None
 
 async def follow(ip: str):
     '''
@@ -82,16 +150,27 @@ async def follow(ip: str):
             Robot moves to follow the closest person in the camera frames.
     '''
     # Import configuration from JSON config files
-    canbus_config: EventServiceConfig = proto_from_json_file(CANBUS_CONFIG, EventServiceConfig())
-    oak_config: EventServiceConfig = proto_from_json_file(OAK_CONFIG, EventServiceConfig())
+    canbus_config = proto_from_json_file(CANBUS_CONFIG, EventServiceConfig())
+    oak_config = proto_from_json_file(OAK_CONFIG, EventServiceConfig())
     
     # Load user-provided IP into config
     canbus_config.host = ip
-    oak_config.host = ip
+    oak_config.host = ip 
 
     # Create clients for the canbus and oak cameras
     canbus_client = EventClient(canbus_config)
     oak_client = EventClient(oak_config)
+
+    # Calibration Fetching
+    try:
+        calibration = await oak_client.request_reply('/calibration', Empty(), decode=True)  # Request OAK calibration details
+        
+        # The focal length is the distance between the camera lens and the light sensor. A short focal length would mean a wide FOV. Used in depth calculations
+        CAMERA_FOCAL_LENGTH = float(calibration.camera_data[0].intrinsic_matrix[0])
+        print(f'[CALIBRATION] Successfully loaded focal length = {CAMERA_FOCAL_LENGTH}')
+    except Exception as e:
+        CAMERA_FOCAL_LENGTH = 800.0 # Default for OAK-D at 720p
+        print(f'[WARN] Calibration failed: {e}. Using default focal length: {CAMERA_FOCAL_LENGTH}')
 
     # Load the YOLO model
     model = YOLO(MODEL_NAME)
@@ -102,24 +181,28 @@ async def follow(ip: str):
     # Per-camera latest state
     states = {
         'oak0': {
-            "frame": None,            # Image from the Oak camera to be altered and displayed by OpenCV
-            "target_center_x": None,  # Target person's horizontal center, smoothed to avoid motor jittering
-            "box": None,              # Bounding box dimentions in full-res: (x1, y1, x2, y2)
-            "height_fraction": None,  # Bounding box height fraction of frame
-            "score": None,            # Model confidence in person detection
-            "timestamp": 0.0,         # Timestamp of current state
+            'frame': None,            # Image from the Oak camera to be altered and displayed by OpenCV
+            'target_center_x': None,  # Target person's horizontal center, smoothed to avoid motor jittering
+            'box': None,              # Bounding box dimentions in full-res: (x1, y1, x2, y2)
+            'score': None,            # Model confidence in person detection
+            'timestamp': 0.0,         # Timestamp of current state
+            'last_detection': 0.0,    # Timestamp of the last frame with a detected person
+            'disparity': None,        # Disparity frame from OAK camera
+            'depth': None,            # Calculated depth from detected person
         },
         'oak1': {
-            "frame": None,
-            "target_center_x": None,
-            "box": None,
-            "height_fraction": None,
-            "score": None,
-            "timestamp": 0.0,
+            'frame': None,
+            'target_center_x': None,
+            'box': None,
+            'score': None,
+            'timestamp': 0.0,
+            'last_detection': 0.0,
+            'disparity': None,
+            'depth': None,
         }
     }
 
-    async def camera_worker(sub, cam_name):
+    async def camera_worker(sub, cam_name: str, stream_type: str):
         '''
         Asynchronous function for detecting people in the frame of a camera.
 
@@ -128,108 +211,112 @@ async def follow(ip: str):
         
         Args:
             sub: The subscription of the camera to detect people in.
-            cam_name: The name of the camera (ex. "oak0").
+            cam_name: The name of the camera (ex. 'oak0').
         
         Results:
             Updates the state entry corresponding to the camera name in the "states" dictionary
         '''
-        # Asynchronously monitor the oak camera for people, using the YOLO model
+        # Asynchronously monitor the oak camera for detected people, using the YOLO model
         async for event, msg in oak_client.subscribe(sub, decode=True):
-            # Decode the frame into a readable format, immediately skipping if the frame doesn't exist
-            frame = cv2.imdecode(np.frombuffer(msg.image_data, dtype=np.uint8), cv2.IMREAD_COLOR)
-            if frame is None:
+            now = time.time()
+
+            # If this camera stream is disparity, just use it to update the disparity value for that camera's state
+            if stream_type == 'disparity':
+                disparity = cv2.imdecode(np.frombuffer(msg.image_data, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+                if disparity is not None:
+                    states[cam_name]['disparity'] = disparity
                 continue
 
-            frame_height, frame_width = frame.shape[:2]
-
+            # Decode the frame into a readable format, immediately skipping if the frame doesn't exist
+            frame = cv2.imdecode(np.frombuffer(msg.image_data, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is None: 
+                continue
+            
             # Downscale the frame to speed up YOLO model (lower size = faster analysis)
-            if FRAME_SCALING != 1.0:
-                yolo_frame = cv2.resize(frame, None, fx=FRAME_SCALING, fy=FRAME_SCALING)
-            else:
-                yolo_frame = frame
+            yolo_frame = cv2.resize(frame, None, fx=FRAME_SCALING, fy=FRAME_SCALING) if FRAME_SCALING != 1.0 else frame
 
             # Run the YOLO model with our constant parameters, using the asynch lock to ensure only this worker can use the model right now
             async with inference_lock:
                 results = await asyncio.to_thread(
-                    model.predict,
-                    source=yolo_frame,          # Load our camera frame into the model
-                    conf=CONFIDENCE_THRESHOLD,
-                    iou=IOU,
+                    model.predict,              # Load our camera frame into the model
+                    source=yolo_frame, 
+                    conf=CONFIDENCE_THRESHOLD, 
+                    iou=IOU, 
                     classes=[0],                # Only detect people
                     verbose=False,              # Do not output detection logs to terminal
                 )
 
-            best_box = None
-            best_score = None
-            center_x = None
-            height_fraction = None
-
-            # If the model returns results for any frames, look at the first (and only) frame
-            if results and len(results) > 0:
+            # If the model returns results for any frames
+            if results and len(results[0].boxes) > 0:
                 result = results[0]
+                # Calculate the areas of all of the boxes, and find the index of the largest area (corresponding to the largest box)
+                areas = (result.boxes.xyxy[:, 2] - result.boxes.xyxy[:, 0]) * (result.boxes.xyxy[:, 3] - result.boxes.xyxy[:, 1])
+                largest_area_id = int(np.argmax(areas.cpu().numpy()))
                 
-                # If the model detected anything in the frame
-                if result.boxes is not None and len(result.boxes) > 0:
-                    # Bring the boxes (in x1,y1,x2,y2 format) and their corresponding confidence scores data from the GPU to the CPU in NumPy array format
-                    boxes_xyxy = result.boxes.xyxy.cpu().numpy()
-                    scores = result.boxes.conf.cpu().numpy()
-
-                    # Calculate the areas of all of the boxes, and find the index of the largest area (corresponding to the largest box)
-                    areas = (boxes_xyxy[:, X2] - boxes_xyxy[:, X1]) * (boxes_xyxy[:, Y2] - boxes_xyxy[:, Y1])  # For all boxes, store the area (width (x2-x1) * height (y2-y1))
-                    largest_area_id = int(np.argmax(areas))
-
-                    # Use the index of the largest area to get the largest (and closest) detection result details
-                    x1, y1, x2, y2 = boxes_xyxy[largest_area_id].tolist()
-                    best_score = float(scores[largest_area_id])
-
-                    # Rescale box vertices back to full-resolution if frame was previously downscaled
-                    if FRAME_SCALING != 1.0:
-                        x1 /= FRAME_SCALING; y1 /= FRAME_SCALING
-                        x2 /= FRAME_SCALING; y2 /= FRAME_SCALING
-
-                    # Ensure that the box remains completely within frame after rescaling
-                    x1 = int(clamp(x1, 0, frame_width - 1))
-                    y1 = int(clamp(y1, 0, frame_height - 1))
-                    x2 = int(clamp(x2, 0, frame_width - 1))
-                    y2 = int(clamp(y2, 0, frame_height - 1))
-
-                    # Store the best bounding box and center x-value
-                    best_box = (x1, y1, x2, y2)
-                    center_x = (x1 + x2) // 2
-
-                    # Find the fraction of the frame's height that the bounding box takes up (used to find how close it is)
-                    box_height = max(1, (y2 - y1))  # Value will always be at least 1 so that fraction is never 0
-                    height_fraction = box_height / float(frame_height)
-
-                    # Draw bounding box on the frame for visualization
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.circle(frame, (center_x, (y1 + y2) // 2), 6, (0, 0, 255), -1)
-                    cv2.putText(
-                        frame,
-                        f"{cam_name} conf={best_score:.2f} h={height_fraction:.2f}",
-                        (x1, max(20, y1 - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (255, 255, 255),
-                        2,
-                    )
-
-            # EMA smoothing for center x-value
-            target_center_x = states[cam_name]["target_center_x"]
-            if center_x is not None:
-                if target_center_x is None:
-                    target_center_x = float(center_x)
+                # Use the index of the largest area to get the largest (and closest) detection result details
+                box = result.boxes.xyxy[largest_area_id].cpu().numpy()
+                
+                # Rescale box vertices back to full-resolution if frame was previously downscaled
+                if(FRAME_SCALING != 1.0):
+                    box /= FRAME_SCALING
+                    
+                # Get the two corners of the bounding box
+                x1, y1, x2, y2 = box.astype(int)
+                
+                # Update State
+                states[cam_name]['box'] = (x1, y1, x2, y2)
+                states[cam_name]['score'] = float(result.boxes.conf[largest_area_id])
+                states[cam_name]['last_detection'] = now
+                
+                # Calculate depth of the person in the frame
+                raw_z = median_depth_from_disparity(
+                    states[cam_name]['disparity'], 
+                    (x1,y1,x2,y2),
+                    CAMERA_FOCAL_LENGTH
+                )
+                
+                # If a depth was found, apply EMA smoothing
+                if raw_z:
+                    # Apply EMA smoothing to Z distance
+                    prev_depth = states[cam_name]['depth']
+                    if prev_depth is None:
+                        states[cam_name]['depth'] = raw_z  
+                    else:
+                        states[cam_name]['depth'] = (EMA_ALPHA * prev_depth) + ((1-EMA_ALPHA) * raw_z)
+                
+                # EMA smoothing for center x-value
+                center_x = (x1 + x2) // 2
+                prev_center_x = states[cam_name]['target_center_x']
+                
+                # Smooth out turning by choosing a point between the current point and the actual center of the bounding box to turn to
+                if prev_center_x is None:
+                    states[cam_name]['target_center_x'] = float(center_x)  
                 else:
-                    # Smooth out turning by choosing a point between the current point and the actual center of the bounding box to turn to
-                    target_center_x = (EMA_ALPHA * target_center_x) + ((1.0 - EMA_ALPHA) * float(center_x))
+                    states[cam_name]['target_center_x'] = (EMA_ALPHA * prev_center_x) + ((1-EMA_ALPHA) * center_x)
 
-            # Update state
-            states[cam_name]["frame"] = frame
-            states[cam_name]["target_center_x"] = target_center_x
-            states[cam_name]["box"] = best_box
-            states[cam_name]["height_fraction"] = height_fraction
-            states[cam_name]["score"] = best_score
-            states[cam_name]["timestamp"] = time.time()
+                # Draw bounding box on the frame for visualization
+                cv2.rectangle(
+                    frame, 
+                    (x1, y1), 
+                    (x2, y2), 
+                    (0, 255, 0), 
+                    2
+                )
+                
+                # Draw the 30% ROI box used for depth
+                box_width = x2 - x1
+                box_height = y2 - y1
+                cv2.rectangle(
+                    frame, 
+                    (x1 + int(0.3 * box_width), y1 + int(0.3 * box_height)), 
+                    (x2 - int(0.3 * box_width), y2 - int(0.1 * box_height)), 
+                    (255, 0, 0), 
+                    1
+                )
+
+            # Update state with new frame
+            states[cam_name]['frame'] = frame
+            states[cam_name]['timestamp'] = now
 
     async def control_loop():
         '''
@@ -241,173 +328,121 @@ async def follow(ip: str):
                 Sends twist commands to motors.
         '''
         period = 1.0 / SEND_HZ  # How many seconds between each motor twist message send
-        last_sent = 0.0
         
-        # These will be used to implement a slow stop when someone goes out of frame
+        # Used for slow stop when someone leaves the frame
+        last_sent = 0.0
         last_valid_twist = Twist2d()
-        last_valid_twist.linear_velocity_x = 0.0
-        last_valid_twist.angular_velocity = 0.0
         last_detection_time = None
-        stop_factor = 0
-
+        
         # Create windows for camera feeds
-        cv2.namedWindow('oak0', cv2.WINDOW_NORMAL)
-        cv2.namedWindow('oak1', cv2.WINDOW_NORMAL)
-        cv2.namedWindow("ACTIVE_TARGET", cv2.WINDOW_NORMAL)
+        cv2.namedWindow('ACTIVE_TARGET', cv2.WINDOW_NORMAL)
 
         while True:
             now = time.time()
-
-            # Choose the best/closest target across cameras
+            
+            # Variables for storing best/closest target across cameras
             best_cam = None
-            best_height = -1.0  # Height fractions are always 0 to 1, so initializing to -1 ensures that any height is chosen over this initial value
-
-            for cam_name, cam_state in states.items():
+            best_depth = 1e9  # Initialized to very far away so that any distance is considered better than the initial
+            
+            # Choose the best/closest target across cameras
+            for cam, state in states.items():
                 # Show camera feed
-                if cam_state['frame'] is not None:
-                    cv2.imshow(cam_name, cam_state['frame'])
+                if state['frame'] is not None: 
+                    cv2.imshow(cam, state['frame'])
+                if state['disparity'] is not None: 
+                    cv2.imshow(f'disparity_{cam}', visualize_depth(state['disparity'], DISPARITY_SCALE))
                 
-                # Find how long ago the last state update was
-                age = now - cam_state["timestamp"]
-                
-                # If the last time the state was updated was longer than the timeout constant, do nothing
-                if age > LOST_TIMEOUT:
-                    continue
-                # If any critical information is missing from the state, do nothing
-                if cam_state["box"] is None or cam_state["target_center_x"] is None or cam_state["height_fraction"] is None:
-                    continue
-
-                # Find the camera with the closest detected person (tallest bounding box)
-                if cam_state["height_fraction"] > best_height:
-                    best_height = cam_state["height_fraction"]
-                    best_cam = cam_name
+                if (now - state['last_detection']) < LOST_TIMEOUT and state['depth']:
+                    if state['depth'] < best_depth:
+                        best_depth = state['depth']
+                        best_cam = cam
 
             # Create a twist command initialized to no movement
             twist = Twist2d()
-            twist.linear_velocity_x = 0.0
-            twist.angular_velocity = 0.0
-
+            
             # Send a twist command to the robot motors based on the camera with the closest detected person. If there is none, stop.
-            if best_cam is not None:
-                # Get details from the camera state
-                cam_state = states[best_cam]
-                frame = cam_state["frame"]
-                target_center_x = cam_state["target_center_x"]
-                box = cam_state["box"]
-                height_fraction = cam_state["height_fraction"]
-                score = cam_state["score"]
-
-                # Get details about frame dimensions
-                height, width = frame.shape[:2]
-                center = width // 2
-                horizontal_deadzone = int(width * ANGULAR_DEADZONE)
-
-                # Distance control based on height of bounding box
-                # A positive error means the bounding box is shorter (and thus farther) than the target, so robot needs to move forward
-                # A negative error means the bounding box is taller (and thus closer) than the target, so robot needs to move backward
-                height_error = TARGET_HEIGHT - float(height_fraction)
-
-                # Linear movement
-                if abs(height_error) <= HEIGHT_DEADZONE:
-                    # If error is within the height deadzone, no linear adjustment is needed
-                    linear_command = 0.0
+            if best_cam:
+                state = states[best_cam]
+                depth_error = state['depth'] - TARGET_DEPTH # Positive = too far, Negative = too close
+                
+                # Compute a linear velocity based on the current error
+                if abs(depth_error) > DEPTH_DEADZONE:
+                    linear_velocity = KP_LINEAR * depth_error  
                 else:
-                    # Compute a linear velocity based on the current error and clamp it between velocity limits
-                    linear_command = KP_LINEAR * height_error
-                    linear_command = clamp(linear_command, -MAX_REVERSE, MAX_FORWARD)
+                    linear_velocity = 0.0
+                
+                # Set the twist linear velocity, clamped between velocity limits
+                twist.linear_velocity_x = clamp(linear_velocity, -MAX_REVERSE, MAX_FORWARD)
 
                 # Heading control based on bounding box's distance from the center of the frame
-                # Positive/negative error will determine if robot needs to turn left/right to center on the bounding box
-                angular_error = float(target_center_x - center)
-                
-                # Angular movement
+                angular_error = (state['target_center_x'] - (state['frame'].shape[1] // 2))
                 if FLIP_STEER:
                     angular_error = -angular_error
-
-                if abs(angular_error) <= horizontal_deadzone:
-                    # If error is within the horizontal deadzone, no angular adjustment is needed
-                    angular_command = 0.0
+                    
+                # Compute an angular velocity based on the current error
+                if abs(angular_error) > (state['frame'].shape[1] * ANGULAR_DEADZONE):  # error > (frame_width * deadzone)
+                    angular_velocity = KP_ANGULAR * (angular_error / (state['frame'].shape[1] / 2))  
                 else:
-                    # Compute an angular velocity based on the current error and clamp it between velocity limits
-                    angular_command = KP_ANGULAR * (angular_error / max(1, center))
-                    angular_command = clamp(angular_command, -MAX_ANGULAR, MAX_ANGULAR)
+                    angular_velocity = 0.0
+                    
+                # Set the twist angular velocity, clamped between velocity limits
+                twist.angular_velocity = clamp(angular_velocity, -MAX_ANGULAR, MAX_ANGULAR)
 
-                # Store the linear and angluar velocities in the twist command
-                twist.linear_velocity_x = float(linear_command)
-                # twist.angular_velocity = float(angular_command)
-                
                 # Update last valid twist
-                last_valid_twist.linear_velocity_x = float(linear_command)
-                # last_valid_twist.angular_velocity = float(angular_command)
+                last_valid_twist = twist
                 last_detection_time = now
-
-                # Display the active camera feed and twist details
-                active = frame.copy()
-                cv2.line(active, (center, 0), (center, height), (255, 255, 0), 2)
-                cv2.putText(active, f"ACTIVE: {best_cam}", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
-                cv2.putText(active, f"height_fraction={height_fraction:.2f} target={TARGET_HEIGHT:.2f} lin={linear_command:.2f} ang={angular_command:.2f}",
-                            (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                cv2.putText(active, f"conf={0.0 if score is None else score:.2f} flip_steer={FLIP_STEER}",
-                            (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                cv2.imshow("ACTIVE_TARGET", active)
             else:
-                # Calculate exactly how long the target has been lost
-                if(last_detection_time is not None):
-                    time_since_lost = now - last_detection_time
-                else:
-                    time_since_lost = 99999.0
-                # Slow stop when target lost
-                if(time_since_lost < LOST_TIMEOUT):
+                # Slow stop when not detecting a person
+                if last_detection_time and (now - last_detection_time) < LOST_TIMEOUT:
                     # If still in timeout duration, gradually decrease speed based on how close to the end of timeout duration
-                    stop_factor = 1.0 - (time_since_lost / LOST_TIMEOUT)
-                    twist.linear_velocity_x = last_valid_twist.linear_velocity_x * stop_factor
-                    # twist.angular_velocity = last_valid_twist.angular_velocity * stop_factor
+                    factor = 1.0 - ((now - last_detection_time) / LOST_TIMEOUT)
+                    twist.linear_velocity_x = last_valid_twist.linear_velocity_x * factor
+                    twist.angular_velocity = last_valid_twist.angular_velocity * factor
                 else:
                     # If timeout duration reached, stop robot completely and reset last valid twist
-                    twist.linear_velocity_x = 0.0
-                    twist.angular_velocity = 0.0
                     last_valid_twist = Twist2d()
-            
-                # No target, so display empty target window
-                blank = np.zeros((240, 640, 3), dtype=np.uint8)
-                cv2.putText(blank, "NO TARGET (stopping)", (20, 120),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-                cv2.imshow("ACTIVE_TARGET", blank)
-
-            # Quit if q pressed in any window
-            if (cv2.waitKey(1) & 0xFF) == ord("q"):
-                await canbus_client.request_reply("/twist", Twist2d())
-                return
 
             # Publish at fixed rate by waiting until the specified amount of seconds has passed since last publish
             if now - last_sent >= period:
-                await canbus_client.request_reply("/twist", twist)  # Send the twist command to the robot
-                last_sent = now  # Update time last sent
+                await canbus_client.request_reply('/twist', twist) # Send the twist command to the robot
+                last_sent = now
 
-            await asyncio.sleep(0.001)
+            # Quit if q pressed in any window
+            if (cv2.waitKey(1) & 0xFF) == ord('q'): 
+                break
+            
+            await asyncio.sleep(0.005)
 
-    # Run camera workers and control loop
-    cam_tasks = []
+    # Subscription Setup
+    tasks = []
     for sub in oak_config.subscriptions:
         # Determine camera name
         if 'oak0' in sub.uri.query:
-            cam_tasks.append(asyncio.create_task(camera_worker(sub, 'oak0')))
+            name = 'oak0'  
         elif 'oak1' in sub.uri.query:
-            cam_tasks.append(asyncio.create_task(camera_worker(sub, 'oak1')))
+            name = 'oak1'
+        else:
+            continue
         
+        # Determine stream type
+        if '/left' in sub.uri.path:
+            stream_type = 'left'
+        elif '/disparity' in sub.uri.path:
+            stream_type = 'disparity'
+        else:
+            continue
+        
+        # If the camera name and stream type were both identified, assign it to a camera worker
+        tasks.append(asyncio.create_task(camera_worker(sub, name, stream_type)))
+
     try:
         await control_loop()
     finally:
-        for t in cam_tasks:
-            t.cancel()
+        for t in tasks: t.cancel()
         cv2.destroyAllWindows()
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--ip", type=str, required=True)
-    args = ap.parse_args()
-    
-    asyncio.run(
-        follow(args.ip)
-    )
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--ip', type=str, required=True)
+    args = parser.parse_args()
+    asyncio.run(follow(args.ip))
