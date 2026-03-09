@@ -391,6 +391,22 @@ async def follow(ip: str):
                 # Update last valid twist
                 last_valid_twist = twist
                 last_detection_time = now
+                
+                # Display the active camera feed and twist details
+                active = state['frame'].copy()
+                center = active.shape[1] // 2
+                cv2.line(active, (center, 0), (center, active.shape[0]), (255, 255, 0), 2)
+                cv2.putText(active, f"ACTIVE: {best_cam}", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+                cv2.putText(active, f"depth={state['depth']:.2f} target={TARGET_DEPTH:.2f} lin={linear_velocity:.2f} ang={angular_velocity:.2f}",
+                            (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                if state['score'] is None:
+                    cv2.putText(active, f"conf=0.0 flip_steer={FLIP_STEER}",
+                            (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                else:
+                    cv2.putText(active, f"conf={state['score']:.2f} flip_steer={FLIP_STEER}",
+                            (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.imshow("ACTIVE_TARGET", active)
             else:
                 # Slow stop when not detecting a person
                 if last_detection_time and (now - last_detection_time) < LOST_TIMEOUT:
@@ -401,6 +417,12 @@ async def follow(ip: str):
                 else:
                     # If timeout duration reached, stop robot completely and reset last valid twist
                     last_valid_twist = Twist2d()
+                    
+                # Create a blank or dimmed frame to show we are searching
+                searching_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(searching_frame, "LOST TARGET - SEARCHING...", (50, 240), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.imshow("ACTIVE_TARGET", searching_frame)
 
             # Publish at fixed rate by waiting until the specified amount of seconds has passed since last publish
             if now - last_sent >= period:
