@@ -163,6 +163,7 @@ async def follow(ip: str):
 
     # Calibration Fetching
     try:
+        print('Requesting calibration details...')
         calibration = await oak_client.request_reply('/calibration', Empty(), decode=True)  # Request OAK calibration details
         
         # The focal length is the distance between the camera lens and the light sensor. A short focal length would mean a wide FOV. Used in depth calculations
@@ -350,7 +351,7 @@ async def follow(ip: str):
                 if state['frame'] is not None: 
                     cv2.imshow(cam, state['frame'])
                 if state['disparity'] is not None: 
-                    cv2.imshow(f'disparity_{cam}', visualize_depth(state['disparity'], DISPARITY_SCALE))
+                    cv2.imshow(f'disparity_{cam}', visualize_depth(state['disparity']))
                 
                 if (now - state['last_detection']) < LOST_TIMEOUT and state['depth']:
                     if state['depth'] < best_depth:
