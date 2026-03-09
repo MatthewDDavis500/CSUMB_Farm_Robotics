@@ -37,7 +37,7 @@ DEPTH_DEADZONE = 0.15        # (Meters) Deadzone for following. Having a detecte
 CAMERA_BASELINE = 0.075      # (Meters) Distance between the centers of both camera lenses used by OAK-Ds for depth. Used for triangulation calculations
 DISPARITY_SCALE = 0.33         # 
 KP_LINEAR = 0.7              # (Gain) Proportion for how fast the robot will move forward or backward based on the current error
-MAX_FORWARD = 0.4            # (Meters/Second) Maximum forward velocity
+MAX_FORWARD = 0.3            # (Meters/Second) Maximum forward velocity
 MAX_REVERSE = 0.3            # (Meters/Second) Maximum reverse velocity
 
 ### Heading Control Parameters ###
@@ -386,7 +386,7 @@ async def follow(ip: str):
                     linear_velocity = 0.0
                 
                 # Set the twist linear velocity, clamped between velocity limits
-                twist.linear_velocity_x = clamp(linear_velocity, -MAX_REVERSE, MAX_FORWARD)
+                twist.linear_velocity_x = -clamp(linear_velocity, -MAX_REVERSE, MAX_FORWARD)
 
                 # Heading control based on bounding box's distance from the center of the frame
                 angular_error = (state['target_center_x'] - (state['frame'].shape[1] // 2))
@@ -400,7 +400,7 @@ async def follow(ip: str):
                     angular_velocity = 0.0
                     
                 # Set the twist angular velocity, clamped between velocity limits
-                twist.angular_velocity = clamp(angular_velocity, -MAX_ANGULAR, MAX_ANGULAR)
+                # twist.angular_velocity = clamp(angular_velocity, -MAX_ANGULAR, MAX_ANGULAR)
 
                 # Update last valid twist
                 last_valid_twist = twist
@@ -427,7 +427,7 @@ async def follow(ip: str):
                     # If still in timeout duration, gradually decrease speed based on how close to the end of timeout duration
                     factor = 1.0 - ((now - last_detection_time) / LOST_TIMEOUT)
                     twist.linear_velocity_x = last_valid_twist.linear_velocity_x * factor
-                    twist.angular_velocity = last_valid_twist.angular_velocity * factor
+                    # twist.angular_velocity = last_valid_twist.angular_velocity * factor
                 else:
                     # If timeout duration reached, stop robot completely and reset last valid twist
                     last_valid_twist = Twist2d()
