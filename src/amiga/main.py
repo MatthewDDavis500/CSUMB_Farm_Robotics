@@ -35,7 +35,7 @@ X1, Y1, X2, Y2 = 0, 1, 2, 3
 TARGET_DEPTH = 1.5           # (Meters) Target distance from which to follow a person 
 DEPTH_DEADZONE = 0.15        # (Meters) Deadzone for following. Having a detected person within this much of the target depth will be acceptable
 CAMERA_BASELINE = 0.075      # (Meters) Distance between the centers of both camera lenses used by OAK-Ds for depth. Used for triangulation calculations
-DISPARITY_SCALE = 16         # 
+DISPARITY_SCALE = 0.33         # 
 KP_LINEAR = 0.7              # (Gain) Proportion for how fast the robot will move forward or backward based on the current error
 MAX_FORWARD = 0.4            # (Meters/Second) Maximum forward velocity
 MAX_REVERSE = 0.3            # (Meters/Second) Maximum reverse velocity
@@ -346,6 +346,13 @@ async def follow(ip: str):
 
         while True:
             now = time.time()
+            
+            # print(f'Last Oak0 detection: {states['oak0']['last_detection']}')
+            # print(f'Last Oak1 detection: {states['oak1']['last_detection']}')
+            # print(f'Last Oak0 dpeth: {states['oak0']['depth']}')
+            # print(f'Last Oak1 depth: {states['oak1']['depth']}')
+            # print('-----------------------------------------------------------------------------------------------')
+            
             
             # Variables for storing best/closest target across cameras
             best_cam = None
