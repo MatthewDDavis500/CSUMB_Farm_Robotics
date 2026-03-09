@@ -219,6 +219,12 @@ async def follow(ip: str):
         '''
         # Asynchronously monitor the oak camera for detected people, using the YOLO model
         async for event, msg in oak_client.subscribe(sub, decode=True):
+            # If there are more messages waiting, skip this one
+            # if oak_client.get_queue_size(sub) > 1:
+            #     print('skipping frame...')
+            #     continue
+            # print('processing this frame!')
+            
             now = time.time()
 
             # If this camera stream is disparity, just use it to update the disparity value for that camera's state
