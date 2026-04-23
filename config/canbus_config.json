@@ -1,6 +1,6 @@
 {
     "name": "canbus",
     "port": 6001,
-    "host": "172.20.10.4",
+    "host": "",
     "log_level": "INFO"
 }
