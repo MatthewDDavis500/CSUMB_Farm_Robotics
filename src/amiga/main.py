@@ -25,7 +25,7 @@ CANBUS_CONFIG = str(ROOT_DIR / 'config' / 'canbus_config.json')
 MODEL_NAME = str(ROOT_DIR / 'data' / 'models' / 'yolov8n.pt')    # YOLO model to load
 CONFIDENCE_THRESHOLD = 0.65  # (0-1 Scale) How confident does the model need to be to consider an object a person?
 IOU = 0.5                    # (0-1 Scale) Intersection over union. How much do two bounding boxes need to overlap for the model to consider them the same object and only take the one with the heighest confindence?
-FRAME_SCALING = 0.6          # (Proportional Multiplier) Ratio by which to scale the camera frames before passing to model. Smaller numbers means smaller image size, which means faster computation but less accuracy
+FRAME_SCALING = 1.0          # (Proportional Multiplier) Ratio by which to scale the camera frames before passing to model. Smaller numbers means smaller image size, which means faster computation but less accuracy
 EMA_ALPHA = 0.85             # (0-1 Scale) Smoothness of reaction. Higher values means more memory (previous frames) is considered, so smoother but slower reactions. Lower values mean more new frames are considered, resulting in faster but possibly chattery responses
 
 ### Detection Box Vertex Indices ###
